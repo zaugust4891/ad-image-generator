@@ -8,7 +8,7 @@ pub enum ProviderError {
     Fatal(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ImageResult {
     bytes: Vec<u8>,
     width: u32,
@@ -17,11 +17,17 @@ struct ImageResult {
     model: String,
 }
 
+#[async_trait]
 use image::{ImageBuffer, Rgba};
-trait ImageProvider ImageProvider: Send + Sync {
+pub trait ImageProvider: Send + Sync {
     async fn generate(&self, prompt: &str) -> Result<ImageResult, ProviderError>;
     fn name(&self) -> &'static str;
 }
+
+
+///------Mock Provider-----///
+
+use image::{ImageBuffer, Rgba};
 
 pub struct MockProvider;
 
@@ -55,11 +61,99 @@ impl ImageProvider for MockProvider {
 
 
 
+///-----OpenAI provider (images/generations)-----///
+
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine as _;
 
 
+pub struct OpenAIProvider {
+    client: reqwest::Client,
+    api_key: String,
+    model: String,
+    size: String, // e.g. 1024x1024
+}
 
 
+impl OpenAIProvider {
+    pub fn new(api_key: String, model: String, size: String) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            api_key,
+            model,
+            size,
+        }
+    }
+}
 
+#[derive(serde::Serialize)]
+struct OpenAIRequest<'a> {
+    prompt: &'a str,
+    n: u32,
+    size: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<&'a str>,
+}
+
+#[derive(serde::Deserialize)]
+struct OpenAIResponseData {
+    b64_json: String,
+}
+
+#[derive(serde::Deserialize)]
+struct OpenAIResponse {
+    data: Vec<OpenAIResponseData>,
+}
+
+
+#[async_trait]
+
+impl ImageProvider for OpenAIProvider {
+    fn name(&self) -> &'static str { "openai "}
+
+    async fn generate(&self, prompt: &str) -> Result<ImageResult, ProviderError> {
+        let url = "https://api.openai.com/v1/images/generations";
+        let body = OpenAIRequest {
+            prompt,
+            n: 1,
+            size, & self.size,
+            model: Some(self.model)
+        };
+
+        let resp = self.client
+            .post(url)
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ProviderError::Http(format!("request error: {e}")))?;
+
+        let status = resp.status();
+        if status.as_u16 == 429 { return Err(ProviderError::RateLimited); }
+        if status.is_server_error { return Err(ProviderError::Http(format!("status {status}"))); }
+        if !status.is_success() { return Err(ProviderError::Http(format!("unexpected status {status} "))); }
+
+        let parsed: OpenAIResponse = resp.json().await
+            .map_err(|e| ProviderError::Http(format!("json decode: {e}")))?;
+        let first = parsed.data.into_iter().next()
+            .ok_or_else(|| ProviderError::Http("empty data".into()))?;
+        let bytes = B64.decode(first.b64_json.as_bytes())
+            .map_err(|e| ProviderError::Http(format!("base64: {e}")))?;
+
+        // Try to read dimensions - if fail, keep (0,0)
+        let (w, h) = image::load_from_memory(&bytes)
+            .map(|img| img.dimensions())
+            .unwrap_or((0,0));
+
+        Ok(ImageResult {
+            bytes,
+            width: w,
+            height: h,
+            prompt_used: prompt.to_string(),
+            model: self.model.clone(),
+        })
+    }
+} 
 
 
 
