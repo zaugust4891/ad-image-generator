@@ -1,19 +1,18 @@
 use std::{path::PathBuf, sync::{Arc, atomic::{AtomicU64, Ordering}, Mutex}};
 use anyhow::Result;
-use tokio::{sync::{mpsc, Semaphore}, task::JoinSet, time::{sleep, Duration}};
+use tokio::{sync::{mpsc, Semaphore}, task::JoinSet, time::sleep};
+use tracing::{info, warn};
 
-use crate::{io::save_output, providers::{ImageProvider, ProviderError}};
+use crate::{io::save_output_ext, providers::{ImageProvider, ProviderError}};
 use crate::prompts::VariantGenerator;
 use crate::rate_limit::SimpleRateLimiter;
 use crate::manifest::{ManifestWriter, ManifestRecord};
-use crate::post::{PostProcessor};
+use crate::post::PostProcessor;
 use crate::dedupe::PerceptualDeduper;
+use crate::backoff::backoff_ms;
 
 #[derive(Debug, Clone)]
-pub struct ImageJob { 
-    pub id: u64,
-    pub prompt: String
-}
+pub struct ImageJob { pub id: u64, pub prompt: String }
 
 pub struct OrchestratorParams {
     pub target_images: u64,
@@ -27,6 +26,10 @@ pub struct OrchestratorExtras {
     pub dedupe: Option<Arc<PerceptualDeduper>>,
 }
 
+/// Start the async orchestrator with a prompt generator.
+/// `img_ext` is the file extension (png|jpg|webp) for saving.
+/// `price_usd_per_image` is recorded in the manifest.
+/// backoff params tune exponential retries for transient errors.
 pub async fn run_orchestrator_with_variants(
     provider: Arc<dyn ImageProvider>,
     run_id: String,
@@ -35,6 +38,11 @@ pub async fn run_orchestrator_with_variants(
     params: OrchestratorParams,
     extras: OrchestratorExtras,
     resume: bool,
+    img_ext: Option<String>,
+    price_usd_per_image: f32,
+    backoff_base_ms: u64,
+    backoff_factor: f64,
+    backoff_jitter_ms: u64,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::channel::<ImageJob>(params.queue_cap);
     let tx_arc = Arc::new(tx);
@@ -67,11 +75,10 @@ pub async fn run_orchestrator_with_variants(
     drop(tx_arc);
 
     let mut joinset = JoinSet::new();
+    let img_ext = img_ext.unwrap_or_else(|| "png".to_string());
 
     while let Some(job) = rx.recv().await {
         if completed.load(Ordering::Relaxed) >= params.target_images { break; }
-
-
 
         let permit = sem.clone().acquire_owned().await.expect("semaphore");
         let provider = provider.clone();
@@ -87,6 +94,11 @@ pub async fn run_orchestrator_with_variants(
         let dedupe = extras.dedupe.clone();
         let skipped_dupes = skipped_dupes.clone();
         let target_images_local = params.target_images;
+        let img_ext_local = img_ext.clone();
+        let price = price_usd_per_image;
+        let b_base = backoff_base_ms;
+        let b_factor = backoff_factor;
+        let b_jitter = backoff_jitter_ms;
 
         joinset.spawn(async move {
             let _permit = permit;
@@ -94,10 +106,10 @@ pub async fn run_orchestrator_with_variants(
             limiter.wait().await;
 
             let mut last_err: Option<anyhow::Error> = None;
-            for attempt in 1..=3u32 {
+            for attempt in 1..=6u32 { // allow up to 6 retries with exponential backoff
                 match provider.generate(&job.prompt).await {
                     Ok(res_raw) => {
-                        // Post-process (resize/watermark/format)
+                        // Post-process
                         let (processed_bytes, new_w, new_h) = match post.process(&res_raw.bytes) {
                             Ok(v) => v,
                             Err(e) => { last_err = Some(e); continue; }
@@ -110,23 +122,23 @@ pub async fn run_orchestrator_with_variants(
                                 Ok((is_dup, h)) => {
                                     phash = Some(h);
                                     if is_dup {
-                                        // Count and DO NOT save; enqueue next if needed
-                                        let done_so_far = completed.load(Ordering::Relaxed);
                                         skipped_dupes.fetch_add(1, Ordering::Relaxed);
+                                        let done_so_far = completed.load(Ordering::Relaxed);
+                                        warn!(id = job.id, "near-duplicate skipped");
                                         if done_so_far < target_images_local {
                                             if let Some(next_prompt) = { generator.lock().unwrap().next() } {
                                                 let new_id = next_id.fetch_add(1, Ordering::Relaxed);
                                                 let _ = tx_for_task.send(ImageJob { id: new_id, prompt: next_prompt }).await;
                                             }
                                         }
-                                        return; // skip saving duplicates
+                                        return; // skip
                                     }
                                 }
                                 Err(e) => { last_err = Some(e); continue; }
                             }
                         }
 
-                        // Build a new ImageResult-like view for save_output sizing
+                        // Save (correct extension + cost)
                         let res_for_save = crate::providers::ImageResult {
                             bytes: processed_bytes.clone(),
                             width: if new_w > 0 { new_w } else { res_raw.width },
@@ -135,11 +147,12 @@ pub async fn run_orchestrator_with_variants(
                             model: res_raw.model.clone(),
                         };
 
-                        if let Err(e) = save_output(&out_dir, job.id, &run_id, &res_for_save).await {
+                        if let Err(e) = save_output_ext(&out_dir, job.id, &run_id, &res_for_save, &img_ext_local, Some(price)).await {
                             last_err = Some(e);
                         } else {
                             let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
 
+                            // Manifest record
                             let rec = ManifestRecord {
                                 id: job.id,
                                 run_id: &run_id,
@@ -148,22 +161,27 @@ pub async fn run_orchestrator_with_variants(
                                 width: res_for_save.width,
                                 height: res_for_save.height,
                                 created_at: chrono::Utc::now().to_rfc3339(),
-                                cost_usd: None,
+                                cost_usd: Some(price),
                                 phash: phash.as_deref(),
                             };
                             let _ = manifest.append(&rec).await;
 
+                            // Enqueue next
                             if done < target_images_local {
                                 if let Some(next_prompt) = { generator.lock().unwrap().next() } {
                                     let new_id = next_id.fetch_add(1, Ordering::Relaxed);
                                     let _ = tx_for_task.send(ImageJob { id: new_id, prompt: next_prompt }).await;
                                 }
                             }
-                            return; // success
+                            info!(id = job.id, done, target = target_images_local, "saved image");
+                            return;
                         }
                     }
                     Err(ProviderError::RateLimited) | Err(ProviderError::Http(_)) => {
-                        sleep(Duration::from_millis(250 * attempt as u64)).await;
+                        // exponential backoff with jitter
+                        let ms = backoff_ms(attempt, b_base, b_factor, b_jitter);
+                        warn!(attempt, ms, "transient error; backing off");
+                        sleep(std::time::Duration::from_millis(ms)).await;
                     }
                     Err(ProviderError::Fatal(msg)) => {
                         last_err = Some(anyhow::anyhow!("fatal provider error: {msg}"));
@@ -171,17 +189,18 @@ pub async fn run_orchestrator_with_variants(
                     }
                 }
             }
-            if let Some(e) = last_err { eprintln!("job {} failed: {e}", job.id); }
+            if let Some(e) = last_err { warn!(id = job.id, "job failed: {e}"); }
         });
     }
 
     while let Some(_res) = joinset.join_next().await {}
 
-    println!(
-        "Completed {} images (target {}). Skipped dupes: {}",
-        completed.load(Ordering::Relaxed),
-        params.target_images,
-        skipped_dupes.load(Ordering::Relaxed),
+    info!(
+        completed = completed.load(Ordering::Relaxed),
+        target = params.target_images,
+        skipped_dupes = skipped_dupes.load(Ordering::Relaxed),
+        "run finished"
     );
+
     Ok(())
 }

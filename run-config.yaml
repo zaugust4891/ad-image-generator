@@ -1,0 +1,38 @@
+
+#EXAMPLE YAML 
+
+provider:
+  kind: openai          # mock | openai
+  openai_model: gpt-image-1
+  openai_size: 1024x1024
+  price_usd_per_image: 0.04
+
+variant_mode: cartesian  # cartesian | random
+seed: 42                 # used only for random
+
+orchestrator:
+  target_images: 12
+  concurrency: 4
+  queue_cap: 32
+  rate_per_min: 20
+  backoff_base_ms: 300
+  backoff_factor: 2.0
+  backoff_jitter_ms: 250
+
+post:
+  fmt: jpeg              # png | jpeg | webp
+  jpeg_quality: 88
+  width: 768
+  height:
+  watermark_text: "Sierra Sparkling • Demo"
+  watermark_font: "/path/to/Inter-Regular.ttf"
+  watermark_px: 26
+  watermark_margin: 20
+
+dedupe:
+  enabled: true
+  phash_bits: 64
+  phash_thresh: 6
+
+# out_dir: "out/my-campaign"  # optional
+resume: false
