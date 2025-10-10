@@ -1,24 +1,45 @@
-use std::path::PathBuf;
 use anyhow::Result;
+use clap::Parser;
 use chrono::Utc;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use tracing::{info, Level};
+use tracing_subscriber::EnvFilter;
 
 mod providers;
-mod io;
 mod orchestrator;
 mod prompts;
 mod rate_limit;
 mod manifest;
 mod post;
 mod dedupe;
+mod config;
+mod backoff;
+mod io; 
 
 use providers::{ImageProvider, MockProvider, OpenAIProvider};
 use orchestrator::{run_orchestrator_with_variants, OrchestratorParams, OrchestratorExtras};
 use prompts::{PromptTemplate, VariantGenerator};
 use post::{PostProcessor, PostOptions, ResizeCfg, OutFmt, WatermarkCfg};
+use config::{RunConfig, TemplateYaml, VariantModeYaml, OutFmtYaml, choose_ext};
 
-fn pick_out_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("ADGEN_OUT_DIR") { return PathBuf::from(dir); }
+#[derive(Parser, Debug)]
+#[command(name="adgen", version)]
+struct Cli {
+    /// Run configuration YAML
+    #[arg(long)]
+    config: PathBuf,
+    /// Prompt template YAML
+    #[arg(long)]
+    template: PathBuf,
+    /// Optional explicit output directory (overrides config.out_dir)
+    #[arg(long)]
+    out_dir: Option<PathBuf>,
+}
+
+fn pick_out_dir(cli_out: &Option<PathBuf>, cfg_out: &Option<PathBuf>) -> PathBuf {
+    if let Some(x) = cli_out { return x.clone(); }
+    if let Some(x) = cfg_out { return x.clone(); }
     let base = PathBuf::from("out");
     let ts = Utc::now().format("%Y%m%d_%H%M%S");
     base.join(format!("run-{}", ts))
@@ -26,80 +47,88 @@ fn pick_out_dir() -> PathBuf {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Core config
-    let target_images: u64 = std::env::var("ADGEN_TARGET").ok().and_then(|v| v.parse().ok()).unwrap_or(24);
-    let concurrency: usize = std::env::var("ADGEN_CONCURRENCY").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
-    let queue_cap: usize = std::env::var("ADGEN_QUEUE_CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(64);
-    let rate_per_min: u32 = std::env::var("ADGEN_RATE_PER_MIN").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
-    let provider_name: String = std::env::var("ADGEN_PROVIDER").unwrap_or_else(|_| "mock".into());
-    let mode: String = std::env::var("ADGEN_MODE").unwrap_or_else(|_| "cartesian".into());
-    let seed: u64 = std::env::var("ADGEN_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(42);
-    let resume: bool = std::env::var("ADGEN_RESUME").ok().map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
+    // Logs
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env().add_directive(Level::INFO.into()))
+        .init();
 
-    // Post-processing config via env (optional)
-    let resize_w: Option<u32> = std::env::var("ADGEN_RESIZE_W").ok().and_then(|v| v.parse().ok());
-    let resize_h: Option<u32> = std::env::var("ADGEN_RESIZE_H").ok().and_then(|v| v.parse().ok());
-    let out_fmt: String = std::env::var("ADGEN_FMT").unwrap_or_else(|_| "png".into()); // png|jpg|webp
-    let jpeg_q: u8 = std::env::var("ADGEN_JPEG_Q").ok().and_then(|v| v.parse().ok()).unwrap_or(90);
-    let wm_text: Option<String> = std::env::var("ADGEN_WATERMARK_TEXT").ok();
-    let wm_font: Option<String> = std::env::var("ADGEN_WATERMARK_FONT").ok();
-    let wm_px: f32 = std::env::var("ADGEN_WATERMARK_PX").ok().and_then(|v| v.parse().ok()).unwrap_or(28.0);
-    let wm_margin: u32 = std::env::var("ADGEN_WATERMARK_MARGIN").ok().and_then(|v| v.parse().ok()).unwrap_or(24);
+    let args = Cli::parse();
 
-    // Dedupe config
-    let phash_bits: u32 = std::env::var("ADGEN_PHASH_BITS").ok().and_then(|v| v.parse().ok()).unwrap_or(64); // 8x8
-    let phash_thresh: u32 = std::env::var("ADGEN_PHASH_THRESH").ok().and_then(|v| v.parse().ok()).unwrap_or(6);
-    let enable_dedupe: bool = std::env::var("ADGEN_DEDUPE").ok().map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(true);
+    // Load YAMLs
+    let cfg_text = tokio::fs::read_to_string(&args.config).await?;
+    let mut cfg: RunConfig = serde_yaml::from_str(&cfg_text)?;
 
-    let out_dir = pick_out_dir();
+    let tpl_text = tokio::fs::read_to_string(&args.template).await?;
+    let tpl_yml: TemplateYaml = serde_yaml::from_str(&tpl_text)?;
+
+    // Merge env overrides (examples; add more if you like)
+    if let Ok(v) = std::env::var("ADGEN_TARGET") {
+        if let Ok(n) = v.parse() { cfg.orchestrator.target_images = n; }
+    }
+    if let Ok(v) = std::env::var("ADGEN_CONCURRENCY") {
+        if let Ok(n) = v.parse() { cfg.orchestrator.concurrency = n; }
+    }
+    if let Ok(v) = std::env::var("ADGEN_RATE_PER_MIN") {
+        if let Ok(n) = v.parse() { cfg.orchestrator.rate_per_min = n; }
+    }
+
+    let out_dir = pick_out_dir(&args.out_dir, &cfg.out_dir);
     tokio::fs::create_dir_all(&out_dir).await.ok();
-    println!("Output directory: {}", out_dir.display());
+    info!(out = %out_dir.display(), "Output directory");
 
-    // Template (same demo)
+    // Build PromptTemplate & VariantGenerator
     let tpl = PromptTemplate {
-        brand: "Sierra Sparkling Water".into(),
-        product: "12oz Lime".into(),
-        audience: vec!["fitness enthusiasts".into(), "busy professionals".into(), "students".into()],
-        style: vec!["studio lighting".into(), "cinematic".into(), "flat lay".into()],
-        background: vec!["granite countertop".into(), "gym bench".into(), "wood table".into()],
-        cta: vec!["Refresh naturally".into(), "Zero sugar. Full flavor.".into(), "Hydrate different.".into()],
+        brand: tpl_yml.brand,
+        product: tpl_yml.product,
+        audience: tpl_yml.audience,
+        style: tpl_yml.style,
+        background: tpl_yml.background,
+        cta: tpl_yml.cta,
     };
-    let gen = match mode.as_str() {
-        "random" => VariantGenerator::new_random(tpl, seed),
+
+    let mode = match cfg.variant_mode {
+        VariantModeYaml::Random => "random",
+        VariantModeYaml::Cartesian => "cartesian",
+    };
+    let gen = match mode {
+        "random" => VariantGenerator::new_random(tpl, cfg.seed.unwrap_or(42)),
         _ => VariantGenerator::new_cartesian(tpl),
     };
 
-    // Provider
-    let provider: Arc<dyn ImageProvider> = match provider_name.as_str() {
-        "openai" => {
-            let key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY not set");
-            let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-image-1".into());
-            let size  = std::env::var("OPENAI_SIZE").unwrap_or_else(|_| "1024x1024".into());
+    // Provider selection + price
+    let price_usd = cfg.provider.price_usd_per_image.unwrap_or(0.0);
+    let provider: Arc<dyn ImageProvider> = match cfg.provider.kind {
+        config::ProviderKind::Mock => Arc::new(MockProvider),
+        config::ProviderKind::Openai => {
+            let key = std::env::var("OPENAI_API_KEY")
+                .expect("OPENAI_API_KEY not set for openai provider");
+            let model = cfg.provider.openai_model.clone().unwrap_or_else(|| "gpt-image-1".into());
+            let size  = cfg.provider.openai_size.clone().unwrap_or_else(|| "1024x1024".into());
             Arc::new(OpenAIProvider::new(key, model, size))
         }
-        _ => Arc::new(MockProvider),
     };
 
-    // Post-processing options
-    let fmt = match out_fmt.as_str() {
-        "jpg" | "jpeg" => OutFmt::Jpeg(jpeg_q),
-        "webp" => OutFmt::Webp,
-        _ => OutFmt::Png,
+    // Post-processing
+    let fmt = match cfg.post.fmt {
+        OutFmtYaml::Png => OutFmt::Png,
+        OutFmtYaml::Jpeg => OutFmt::Jpeg(cfg.post.jpeg_quality.unwrap_or(90).clamp(1,100)),
+        OutFmtYaml::Webp => OutFmt::Webp,
     };
-    let watermark = match (wm_text, wm_font) {
-        (Some(text), Some(font_path)) => Some(WatermarkCfg { text, font_path: font_path.into(), px: wm_px, margin: wm_margin }),
+    let ext = choose_ext(&cfg.post.fmt);
+    let watermark = match (&cfg.post.watermark_text, &cfg.post.watermark_font) {
+        (Some(text), Some(font_path)) => Some(WatermarkCfg {
+            text: text.clone(),
+            font_path: font_path.clone(),
+            px: cfg.post.watermark_px.unwrap_or(28.0),
+            margin: cfg.post.watermark_margin.unwrap_or(24),
+        }),
         _ => None,
     };
     let post = PostProcessor::new(PostOptions {
-        resize: ResizeCfg { width: resize_w, height: resize_h },
+        resize: ResizeCfg { width: cfg.post.width, height: cfg.post.height },
         watermark,
         fmt,
     });
-
-    // Dedupe
-    let dedupe = if enable_dedupe {
-        Some(Arc::new(dedupe::PerceptualDeduper::new(phash_bits, phash_thresh)))
-    } else { None };
 
     let run_id = format!("{}-{}", provider.name(), Utc::now().timestamp());
 
@@ -108,8 +137,28 @@ async fn main() -> Result<()> {
         run_id,
         out_dir,
         Arc::new(Mutex::new(gen)),
-        orchestrator::OrchestratorParams { target_images, concurrency, queue_cap, rate_per_min },
-        OrchestratorExtras { post: Arc::new(post), dedupe },
-        resume,
+        OrchestratorParams {
+            target_images: cfg.orchestrator.target_images,
+            concurrency: cfg.orchestrator.concurrency,
+            queue_cap: cfg.orchestrator.queue_cap,
+            rate_per_min: cfg.orchestrator.rate_per_min,
+            // new backoff fields will be read inside orchestrator via params pass-through or captured cfg
+        },
+        OrchestratorExtras {
+            post: Arc::new(post),
+            dedupe: if cfg.dedupe.enabled {
+                Some(Arc::new(dedupe::PerceptualDeduper::new(
+                    cfg.dedupe.phash_bits,
+                    cfg.dedupe.phash_thresh,
+                )))
+            } else { None }
+        },
+        cfg.resume,
+        // pass-thru extras we need at worker time:
+        Some(ext.to_string()),
+        price_usd,
+        cfg.orchestrator.backoff_base_ms,
+        cfg.orchestrator.backoff_factor,
+        cfg.orchestrator.backoff_jitter_ms,
     ).await
 }

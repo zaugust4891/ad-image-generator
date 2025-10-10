@@ -10,7 +10,10 @@ use crate::post::{PostProcessor};
 use crate::dedupe::PerceptualDeduper;
 
 #[derive(Debug, Clone)]
-pub struct ImageJob { pub id: u64, pub prompt: String }
+pub struct ImageJob { 
+    pub id: u64,
+    pub prompt: String
+}
 
 pub struct OrchestratorParams {
     pub target_images: u64,
@@ -67,6 +70,8 @@ pub async fn run_orchestrator_with_variants(
 
     while let Some(job) = rx.recv().await {
         if completed.load(Ordering::Relaxed) >= params.target_images { break; }
+
+
 
         let permit = sem.clone().acquire_owned().await.expect("semaphore");
         let provider = provider.clone();
