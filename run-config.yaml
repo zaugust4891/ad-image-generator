@@ -1,38 +1,33 @@
-
-#EXAMPLE YAML 
-
 provider:
-  kind: openai          # mock | openai
-  openai_model: gpt-image-1
-  openai_size: 1024x1024
-  price_usd_per_image: 0.04
-
-variant_mode: cartesian  # cartesian | random
-seed: 42                 # used only for random
+  kind: mock # mock | openai
+  model: mock-v1
+  width: 512
+  height: 512
+  price_usd_per_image: 0.0
 
 orchestrator:
-  target_images: 12
+  target_images: 10
   concurrency: 4
-  queue_cap: 32
-  rate_per_min: 20
-  backoff_base_ms: 300
+  queue_cap: 16
+  rate_per_min: 60
+  backoff_base_ms: 250
   backoff_factor: 2.0
-  backoff_jitter_ms: 250
-
-post:
-  fmt: jpeg              # png | jpeg | webp
-  jpeg_quality: 88
-  width: 768
-  height:
-  watermark_text: "Sierra Sparkling • Demo"
-  watermark_font: "/path/to/Inter-Regular.ttf"
-  watermark_px: 26
-  watermark_margin: 20
+  backoff_jitter_ms: 125
 
 dedupe:
   enabled: true
   phash_bits: 64
-  phash_thresh: 6
+  phash_thresh: 10
 
-# out_dir: "out/my-campaign"  # optional
-resume: false
+post:
+  thumbnail: false
+  thumb_max: 512
+
+rewrite:
+  enabled: false
+  model: gpt-4o-mini
+  system: "Polish and improve the ad prompt while preserving its core intent."
+  max_tokens: 64
+
+out_dir: ./out
+seed: 42

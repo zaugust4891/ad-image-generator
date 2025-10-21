@@ -1,7 +1,23 @@
 
-pub mod prompts
-pub mod providers
-pub mod io
-pub mod orchestrator
-
-use crate::{providers, prompts, io}
+pub mod backoff;  
+pub use backoff::backoff_ms;
+pub mod config;
+pub use config::{ProviderCfg, OrchestratorCfg, DedupeCfg, PostCfg, RewriteCfg, RunCfg, TemplateYaml};
+pub mod dedupe;
+pub use dedupe::PerceptualDeduper;
+pub mod io;
+pub use io::save_image_with_sidecar;
+pub mod manifest;
+pub use manifest::Manifest;
+pub mod orchestrator;
+pub use orchestrator::{run_orchestrator, OrchestratorExtras};
+pub mod post;
+pub use post::PostProcessor;
+pub mod providers;
+pub use providers::ImageProvider;
+pub mod prompts;
+pub use prompts::VariantGenerator;
+pub mod rate_limit;
+pub mod rewrite;
+pub use rate_limit::SimpleRateLimiter;
+pub use rewrite::PromptRewriter;

@@ -1,8 +1,6 @@
-#Example Yaml
-
 brand: "Texas Weiner II Hot Dog Chili"
-product: "Hot Dog Chili"
-audience: ["food-interest", "grill-enthusiasts", "cooks", "barbecue-enthusiasts"]
-style: ["studio lighting", "cinematic", "flat lay"]
-background: ["gym bench", "wood table"]
-cta: ["Homemade",  "Slather your weiner", "Chili for your hot dog" ]
+product: "Chili Sauce"
+styles:
+  - "bold typography, 1960s diner poster"
+  - "moody studio lighting, high-contrast"
+  - "bright playful, flat illustration"
