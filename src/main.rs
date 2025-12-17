@@ -23,6 +23,9 @@ struct Cli{
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load environment variables from a local .env file if present
+    dotenvy::dotenv().ok();
+
     tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env()).init();
     let cli = Cli::parse();
     let cfg: RunCfg = serde_yaml::from_str(&tokio::fs::read_to_string(&cli.config).await?)?;

@@ -1,33 +1,7 @@
-provider:
-  kind: mock # mock | openai
-  model: mock-v1
-  width: 512
-  height: 512
-  price_usd_per_image: 0.0
-
-orchestrator:
-  target_images: 10
-  concurrency: 4
-  queue_cap: 16
-  rate_per_min: 60
-  backoff_base_ms: 250
-  backoff_factor: 2.0
-  backoff_jitter_ms: 125
-
-dedupe:
-  enabled: true
-  phash_bits: 64
-  phash_thresh: 10
-
-post:
-  thumbnail: false
-  thumb_max: 512
-
-rewrite:
-  enabled: false
-  model: gpt-4o-mini
-  system: "Polish and improve the ad prompt while preserving its core intent."
-  max_tokens: 64
-
-out_dir: ./out
+provider: { kind: openai, model: gpt-image-1, width: 1024, height: 1024 }
+orchestrator: { target_images: 8, concurrency: 4, queue_cap: 16, rate_per_min: 60, backoff_base_ms: 200, backoff_factor: 2.0, backoff_jitter_ms: 250 }
+dedupe: { enabled: false, phash_bits: 64, phash_thresh: 10 }
+post: { thumbnail: false, thumb_max: 256 }
+rewrite: { enabled: false, model: null, system: null, max_tokens: null, cache_file: null }
+out_dir: /home/zach/runs/mock/tests/
 seed: 42
