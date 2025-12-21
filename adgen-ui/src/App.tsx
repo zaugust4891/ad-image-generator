@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { listImages, startRun } from "./lib/api";
 import { TemplateEditor } from "./components/TemplateEditor";
 import { ConfigEditor } from "./components/ConfigEditor";
+import { RunMonitor } from "./components/RunMonitor";
 
 
 type Nav = "dashboard" | "config" | "template" | "run" | "gallery";
@@ -18,23 +19,25 @@ export default function App() {
     return "Gallery";
   }, [nav]);
 
+  async function handleStartRun() {
+    const { run_id } = await startRun();
+    setRunId(run_id);
+    setNav("run");
+  }
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
       <div className="mx-auto grid max-w-7xl grid-cols-[260px_1fr] gap-6 p-6">
         <Sidebar nav={nav} setNav={setNav} />
 
         <main className="rounded-2xl border border-zinc-800 bg-zinc-950/40 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-          <Topbar title={title} onRun={async () => {
-            const { run_id } = await startRun();
-            setRunId(run_id);
-            setNav("run");
-          }} />
+          <Topbar title={title} onRun={handleStartRun} />
 
-         <div className="p-6">
+          <div className="p-6">
             {nav === "dashboard" && <Dashboard onOpenGallery={() => setNav("gallery")} />}
             {nav === "config" && <ConfigEditor />}
             {nav === "template" && <TemplateEditor />}
-            {nav === "run" && <RunMonitor runId={runId} />}
+            {nav === "run" && <RunMonitor runId={runId} onStartRun={handleStartRun} />}
             {nav === "gallery" && <Gallery />}
           </div>
         </main>
@@ -120,16 +123,6 @@ function Card({ title, value, sub }: { title: string; value: string; sub: string
       <div className="text-xs text-zinc-400">{title}</div>
       <div className="mt-2 text-2xl font-semibold tracking-tight">{value}</div>
       <div className="mt-2 text-xs text-zinc-400">{sub}</div>
-    </div>
-  );
-}
-
-function RunMonitor({ runId }: { runId: string | null }) {
-  return (
-    <div className="rounded-2xl border border-zinc-800 bg-zinc-900/20 p-5">
-      <div className="text-sm text-zinc-400">
-        {runId ? `Monitoring run: ${runId}` : "No active run. Click 'Run generation' to start."}
-      </div>
     </div>
   );
 }
