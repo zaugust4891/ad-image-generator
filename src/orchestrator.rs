@@ -2,7 +2,9 @@ use anyhow::Result;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::sync::Arc;
 use tokio::{sync::{mpsc, Semaphore}, task::JoinSet};
-
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::broadcast;
+use crate::events::RunEvent;
 use crate::{providers::ImageProvider, prompts::VariantGenerator, io::save_image_with_sidecar, manifest::{Manifest, ManifestRecord}, rate_limit::SimpleRateLimiter};
 
 pub struct OrchestratorCfg{
@@ -20,6 +22,7 @@ pub struct OrchestratorCfg{
     #[allow(unused)]
     pub backoff_jitter_ms: u64,
     pub progress: Option<MultiProgress>,
+    pub events: Option<broadcast::Sender<RunEvent>>,
 }
 
 pub struct OrchestratorExtras{
@@ -34,6 +37,7 @@ pub async fn run_orchestrator(
     cfg: OrchestratorCfg,
     extras: OrchestratorExtras,
 ) -> Result<()> {
+    let done = Arc::new(AtomicU64::new(0));
     let sem = Arc::new(Semaphore::new(cfg.concurrency));
     let (tx, mut rx) = mpsc::channel::<(u64, String)>(cfg.queue_cap);
     let limiter = Arc::new(SimpleRateLimiter::per_minute(cfg.rate_per_min));
@@ -42,6 +46,10 @@ pub async fn run_orchestrator(
         let pb = mp.add(ProgressBar::new(cfg.target_images));
         pb.set_style(ProgressStyle::with_template("{bar:40.cyan/blue} {pos}/{len} {msg}").unwrap());
         pb
+    });
+    emit(&cfg.events, RunEvent::Started {
+        run_id: cfg.run_id.clone(),
+        total: cfg.target_images,
     });
 
     // Producer
@@ -66,6 +74,9 @@ pub async fn run_orchestrator(
         let manifest = manifest.clone();
         let limiter = limiter.clone();
         let pb = pb.clone();
+        let events = cfg.events.clone();
+        let total = cfg.target_images;
+        let done = done.clone();
         let extras = OrchestratorExtras{
             rewriter: extras.rewriter.clone(),
             post: extras.post.clone(),
@@ -73,26 +84,50 @@ pub async fn run_orchestrator(
         };
         let price = cfg.price_usd_per_image;
         set.spawn(async move {
+            emit(&events, RunEvent::Log { run_id: run_id.clone(), msg: format!("#{id} generated prompt") });
+
             let _permit = sem.acquire().await.unwrap();
             limiter.wait().await;
             let mut prompt_used = original.clone();
             let mut rewritten: Option<String> = None;
             if let Some(rw) = &extras.rewriter {
+                emit(&events, RunEvent::Log { run_id: run_id.clone(), msg: format!("#{id} rewrite: start") });
                 let maybe = rw.rewrite(&original).await.unwrap_or(original.clone());
                 if maybe != original { rewritten = Some(maybe.clone()); prompt_used = maybe; }
+                 emit(&events, RunEvent::Log { run_id: run_id.clone(), msg: format!("#{id} rewrite: changed") });
             }
+
+            emit(&events, RunEvent::Log { run_id: run_id.clone(), msg: format!("#{id} provider: call") });
             // call provider
             let res = provider.generate(&prompt_used).await;
-            let res = match res { Ok(r)=>r, Err(e)=>{ eprintln!("provider error: {e:?}"); return; } };
+            let res = match res {
+                Ok(r) => r,
+                Err(e) => {
+                    emit(&events, RunEvent::Log { run_id: run_id.clone(), msg: format!("#{id} provider error: {e:#}") });
+                    return;
+                }
+            };
             // dedupe
             if let Some(d) = &extras.dedupe {
                 let dup = d.lock().await.is_duplicate(&res.bytes).unwrap_or(false);
-                if dup { return; }
+                if dup {
+                    emit(&events, RunEvent::Log { run_id: run_id.clone(), msg: format!("#{id} dedupe: dropped") });
+                    return;
+                }
             }
+
             // save
             if let Err(e) = save_image_with_sidecar(&out_dir, &run_id, id, provider.name(), &res, &original, rewritten.as_deref(), price).await {
                 eprintln!("save error: {e:#}"); return;
             }
+            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+            emit(&events, RunEvent::Progress {
+                run_id: run_id.clone(),
+                done: n,
+                total,
+            });
+            emit(&events, RunEvent::Log { run_id: run_id.clone(), msg: format!("#{id} saved (done {n}/{total})") });
+
             let _ = manifest.append(ManifestRecord{
                 id, created_at: chrono::Utc::now().to_rfc3339(), provider: provider.name(),
                 model: provider.model(), prompt: &prompt_used, path_png: format!("{:08}-{}-{}.png", id, provider.name(), provider.model()),
@@ -103,5 +138,12 @@ pub async fn run_orchestrator(
     producer.await.ok();
     while let Some(_r) = set.join_next().await {}
     if let Some(pb) = pb { pb.finish_with_message("done"); }
+    emit(&cfg.events, RunEvent::Finished { run_id: cfg.run_id.clone() });
     Ok(())
+}
+
+fn emit(events: &Option<broadcast::Sender<RunEvent>>, evt: RunEvent) {
+    if let Some(tx) = events {
+        let _ = tx.send(evt); // ignore if no listeners
+    }
 }

@@ -21,3 +21,5 @@ pub mod rate_limit;
 pub mod rewrite;
 pub use rate_limit::SimpleRateLimiter;
 pub use rewrite::PromptRewriter;
+pub mod events;
+pub use events::RunEvent;

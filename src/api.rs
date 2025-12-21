@@ -6,14 +6,14 @@ use axum::{
     response::{IntoResponse, sse::{Sse, Event}},
     Json, Router,
 };
-use futures_util::stream::{Stream, StreamExt};
-use serde::{Deserialize, Serialize};
+use futures_util::stream::StreamExt;
+use serde::Serialize;
 use tokio::sync::{broadcast, Mutex};
 use tokio_stream::wrappers::BroadcastStream;
 use tower_http::{cors::CorsLayer, services::ServeDir};
 use uuid::Uuid;
 
-use crate::{config::{RunCfg, TemplateYaml}, run_once};
+use crate::{config::{RunCfg, TemplateYaml}, events::RunEvent, run_once};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -23,15 +23,6 @@ pub struct AppState {
     events_tx: broadcast::Sender<RunEvent>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag="type")]
-pub enum RunEvent {
-    Started { run_id: String },
-    Log { run_id: String, msg: String },
-    Progress { run_id: String, done: u64, total: u64 },
-    Finished { run_id: String },
-    Failed { run_id: String, error: String },
-}
 
 pub async fn serve(bind: String, config_path: PathBuf, template_path: PathBuf) -> Result<()> {
     let (tx, _rx) = broadcast::channel::<RunEvent>(256);
@@ -97,33 +88,36 @@ async fn start_run(State(st): State<AppState>) -> Result<Json<StartRunResp>, Api
     let cfg_path = st.config_path.clone();
     let tpl_path = st.template_path.clone();
 
-    let _ = tx.send(RunEvent::Started { run_id: run_id.clone() });
-    let _ = tx.send(RunEvent::Log { run_id: run_id.clone(), msg: "Run spawned".into() });
-
     // spawn the actual run
     let spawn_run_id = run_id.clone();
     tokio::spawn(async move {
-        // NOTE: run_once currently generates its own internal run_id.
-        // For now, we treat this API run_id as the “session id”.
-        // If you want them identical, we’ll thread run_id into OrchestratorCfg next.
-        let res = run_once(cfg_path, tpl_path, None, false).await;
-        match res {
-            Ok(_) => { let _ = tx.send(RunEvent::Finished { run_id: spawn_run_id }); }
-            Err(e) => { let _ = tx.send(RunEvent::Failed { run_id: spawn_run_id, error: format!("{e:#}") }); }
+        if let Err(e) = run_once(cfg_path, tpl_path, None, false, Some(spawn_run_id), Some(tx)).await {
+            eprintln!("run error: {e:#}");
         }
     });
 
     Ok(Json(StartRunResp { run_id }))
 }
 
-async fn run_events(
+pub async fn run_events(
     State(st): State<AppState>,
-    Path(_id): Path<String>,
-) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
+    Path(run_id): Path<String>,
+) -> Sse<impl futures_util::Stream<Item = Result<Event, std::convert::Infallible>>> {
     let rx = st.events_tx.subscribe();
 
     let stream = BroadcastStream::new(rx)
         .filter_map(|msg| async move { msg.ok() })
+        .filter(move |evt: &RunEvent| {
+            // keep only events for this run_id
+            let ok = match evt {
+                RunEvent::Started { run_id: id, .. } => id == &run_id,
+                RunEvent::Log { run_id: id, .. } => id == &run_id,
+                RunEvent::Progress { run_id: id, .. } => id == &run_id,
+                RunEvent::Finished { run_id: id } => id == &run_id,
+                RunEvent::Failed { run_id: id, .. } => id == &run_id,
+            };
+            futures_util::future::ready(ok)
+        })
         .map(|evt| {
             let json = serde_json::to_string(&evt).unwrap();
             Ok(Event::default().event("message").data(json))
@@ -131,7 +125,6 @@ async fn run_events(
 
     Sse::new(stream)
 }
-
 #[derive(Serialize)]
 struct ImageItem { name: String, url: String, created_ms: u128 }
 
