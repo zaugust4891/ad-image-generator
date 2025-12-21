@@ -5,32 +5,69 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
-mod backoff; mod config; mod dedupe; mod io; mod manifest; mod orchestrator; mod post; mod providers; mod prompts; mod rate_limit; mod rewrite;
+mod backoff; mod config; mod dedupe; mod io; mod manifest; mod orchestrator; mod post; mod providers; mod prompts; mod rate_limit; mod rewrite; mod api;
 use config::{RunCfg, TemplateYaml};
-use orchestrator::{OrchestratorCfg, OrchestratorExtras};
+
 use providers::{ImageProvider, MockProvider, OpenAIProvider};
 use prompts::{PromptTemplate, VariantGenerator};
 use rewrite::{OpenAIRewriter};
 
 #[derive(Parser, Debug)]
-#[command(name="adgen", version)]
-struct Cli{
-    #[arg(long)] config: PathBuf,
-    #[arg(long)] template: PathBuf,
-    #[arg(long)] out_dir: Option<PathBuf>,
-    #[arg(long)] resume: bool,
+#[command(name = "adgen", version)]
+struct Cli {
+    #[command(subcommand)]
+    cmd: Command,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Command {
+    /// Run a single image-generation job (existing behavior)
+    Run {
+        #[arg(long)]
+        config: PathBuf,
+
+        #[arg(long)]
+        template: PathBuf,
+
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+
+        #[arg(long)]
+        resume: bool,
+    },
+
+    /// Start the local HTTP API for the frontend
+    Serve {
+        #[arg(long, default_value = "127.0.0.1:8787")]
+        bind: String,
+
+        #[arg(long, default_value = "./run-config.yaml")]
+        config_path: PathBuf,
+
+        #[arg(long, default_value = "./template.yml")]
+        template_path: PathBuf,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Load environment variables from a local .env file if present
-    dotenvy::dotenv().ok();
-
     tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env()).init();
     let cli = Cli::parse();
-    let cfg: RunCfg = serde_yaml::from_str(&tokio::fs::read_to_string(&cli.config).await?)?;
-    let tpl_yaml: TemplateYaml = serde_yaml::from_str(&tokio::fs::read_to_string(&cli.template).await?)?;
-    let out_dir = cli.out_dir.unwrap_or(cfg.clone().out_dir);
+
+    match cli.cmd {
+        Command::Run { config, template, out_dir, resume } => {
+            run_once(config, template, out_dir, resume).await
+        }
+        Command::Serve { bind, config_path, template_path } => {
+            api::serve(bind, config_path, template_path).await
+        }
+    }
+}
+
+pub async fn run_once(config: PathBuf, template: PathBuf, out_dir: Option<PathBuf>, _resume: bool) -> Result<()> {
+    let cfg: RunCfg = serde_yaml::from_str(&tokio::fs::read_to_string(&config).await?)?;
+    let tpl_yaml: TemplateYaml = serde_yaml::from_str(&tokio::fs::read_to_string(&template).await?)?;
+    let out_dir = out_dir.unwrap_or(cfg.clone().out_dir);
     tokio::fs::create_dir_all(&out_dir).await?;
 
     // Provider
@@ -58,20 +95,14 @@ async fn main() -> Result<()> {
         )))
     } else { None };
 
-    // Post
     let post = post::PostProcessor::new(cfg.post.thumbnail, cfg.post.thumb_max);
-
-    // Dedupe
     let dedupe = if cfg.dedupe.enabled { Some(Arc::new(tokio::sync::Mutex::new(dedupe::PerceptualDeduper::new(cfg.dedupe.phash_bits, cfg.dedupe.phash_thresh)))) } else { None };
-
-    // Progress
     let mp = MultiProgress::new();
 
-    // Run
     orchestrator::run_orchestrator(
         provider,
         generator,
-        OrchestratorCfg{
+        orchestrator::OrchestratorCfg{
             run_id: format!("run-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S")),
             out_dir,
             target_images: cfg.orchestrator.target_images,
@@ -84,9 +115,10 @@ async fn main() -> Result<()> {
             backoff_jitter_ms: cfg.orchestrator.backoff_jitter_ms,
             progress: Some(mp.clone()),
         },
-        OrchestratorExtras{ rewriter, post: Arc::new(post), dedupe },
+        orchestrator::OrchestratorExtras{ rewriter, post: Arc::new(post), dedupe },
     ).await?;
 
     println!("\n✅ Run complete.");
     Ok(())
 }
+

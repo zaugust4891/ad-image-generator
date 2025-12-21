@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { listImages, startRun } from "./lib/api";
+import { TemplateEditor } from "./components/TemplateEditor";
+import { ConfigEditor } from "./components/ConfigEditor";
+
 
 type Nav = "dashboard" | "config" | "template" | "run" | "gallery";
 
@@ -27,7 +30,7 @@ export default function App() {
             setNav("run");
           }} />
 
-          <div className="p-6">
+         <div className="p-6">
             {nav === "dashboard" && <Dashboard onOpenGallery={() => setNav("gallery")} />}
             {nav === "config" && <ConfigEditor />}
             {nav === "template" && <TemplateEditor />}
@@ -121,31 +124,39 @@ function Card({ title, value, sub }: { title: string; value: string; sub: string
   );
 }
 
-// Stubs (I’ll fill these with the exact config/template fields + validation next)
-function ConfigEditor() {
-  return <div className="text-sm text-zinc-300">Config editor UI goes here (form + raw YAML tabs).</div>;
-}
-function TemplateEditor() {
-  return <div className="text-sm text-zinc-300">Template editor UI goes here (brand/product/styles chips).</div>;
-}
 function RunMonitor({ runId }: { runId: string | null }) {
-  return <div className="text-sm text-zinc-300">Run monitor for {runId ?? "(none yet)"} (SSE logs + progress + thumbnails).</div>;
-}
-function Gallery() {
-  const [imgs, setImgs] = useState<{ name: string; url: string }[]>([]);
-  useEffect(() => {
-    listImages().then(setImgs).catch(() => setImgs([]));
-  }, []);
   return (
-    <div>
-      <div className="mb-4 text-sm text-zinc-400">Latest outputs</div>
-      <div className="grid grid-cols-4 gap-3">
-        {imgs.map((img) => (
-          <a key={img.name} href={img.url} target="_blank" rel="noreferrer" className="group overflow-hidden rounded-xl border border-zinc-800">
-            <img src={img.url} className="aspect-square w-full object-cover transition group-hover:scale-[1.02]" />
-          </a>
-        ))}
+    <div className="rounded-2xl border border-zinc-800 bg-zinc-900/20 p-5">
+      <div className="text-sm text-zinc-400">
+        {runId ? `Monitoring run: ${runId}` : "No active run. Click 'Run generation' to start."}
       </div>
+    </div>
+  );
+}
+
+function Gallery() {
+  const [images, setImages] = useState<{ name: string; url: string; created_ms: number }[]>([]);
+
+  useEffect(() => {
+    listImages().then(setImages).catch(() => setImages([]));
+  }, []);
+
+  return (
+    <div className="grid gap-4">
+      {images.length === 0 ? (
+        <div className="rounded-2xl border border-zinc-800 bg-zinc-900/20 p-5 text-sm text-zinc-400">
+          No images yet. Run a generation to populate the gallery.
+        </div>
+      ) : (
+        <div className="grid grid-cols-3 gap-4">
+          {images.map((img) => (
+            <div key={img.name} className="overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/20">
+              <img src={img.url} alt={img.name} className="aspect-square w-full object-cover" />
+              <div className="p-2 text-xs text-zinc-400 truncate">{img.name}</div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
