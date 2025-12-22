@@ -1,16 +1,17 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{path::{Component, PathBuf}, sync::Arc};
 use anyhow::Result;
 use axum::{
-    routing::{get, post},
     extract::{Path, State},
-    response::{IntoResponse, sse::{Sse, Event}},
+    http::{header, HeaderValue, StatusCode},
+    response::{sse::{Event, Sse}, IntoResponse},
+    routing::{get, post},
     Json, Router,
 };
 use futures_util::stream::StreamExt;
 use serde::Serialize;
 use tokio::sync::{broadcast, Mutex};
 use tokio_stream::wrappers::BroadcastStream;
-use tower_http::{cors::CorsLayer, services::ServeDir};
+use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
 use crate::{config::{RunCfg, TemplateYaml}, events::RunEvent, run_once};
@@ -40,7 +41,7 @@ pub async fn serve(bind: String, config_path: PathBuf, template_path: PathBuf) -
         .route("/api/run", post(start_run))
         .route("/api/run/{id}/events", get(run_events))
         .route("/api/images", get(list_images))
-        .nest_service("/images", ServeDir::new(".")) // we’ll generate absolute paths in list_images
+        .route("/images/{name}", get(get_image))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -146,8 +147,6 @@ async fn list_images(State(st): State<AppState>) -> Result<Json<Vec<ImageItem>>,
             .unwrap_or(0);
 
         let name = path.file_name().unwrap().to_string_lossy().to_string();
-        // We’ll serve the folder statically via /images/<full path> is tricky.
-        // Simpler: serve out_dir under /images by changing ServeDir root to out_dir later.
         items.push(ImageItem {
             url: format!("http://127.0.0.1:8787/images/{name}"),
             name,
@@ -155,10 +154,65 @@ async fn list_images(State(st): State<AppState>) -> Result<Json<Vec<ImageItem>>,
         });
     }
 
-    // IMPORTANT: to make the above URLs work, run the server with cwd = out_dir,
-    // OR better: swap ServeDir::new(".") -> ServeDir::new(out_dir) using a nest_service.
     items.sort_by_key(|i| std::cmp::Reverse(i.created_ms));
     Ok(Json(items))
+}
+
+async fn get_image(
+    State(st): State<AppState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    if !is_safe_filename(&name) {
+        return (StatusCode::BAD_REQUEST, "invalid filename").into_response();
+    }
+
+    let cfg_txt = match tokio::fs::read_to_string(&st.config_path).await {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("read config failed: {e}")).into_response(),
+    };
+
+    let cfg: RunCfg = match serde_yaml::from_str(&cfg_txt) {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("parse config failed: {e}")).into_response(),
+    };
+
+    let path: PathBuf = cfg.out_dir.join(&name);
+
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(_) => return (StatusCode::NOT_FOUND, "not found").into_response(),
+    };
+
+    let content_type = content_type_for(&name);
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, HeaderValue::from_static(content_type))],
+        bytes,
+    )
+        .into_response()
+}
+
+fn is_safe_filename(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let p = std::path::Path::new(name);
+    let mut comps = p.components();
+    matches!((comps.next(), comps.next()), (Some(Component::Normal(_)), None))
+}
+
+fn content_type_for(name: &str) -> &'static str {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else {
+        "application/octet-stream"
+    }
 }
 
 #[derive(Debug)]
