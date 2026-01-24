@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `cargo check` — type-check without building
 - `cargo test` — run tests
 - `cargo run -- run --config ./run-config.yaml --template ./template.yml --out_dir ./output` — one-shot image generation
-- `cargo run -- serve --bind 127.0.0.1:8787 --config_path ./run-config.yaml --template_path ./template.yml` — start HTTP API server
+- `cargo run -- serve --bind 127.0.0.1:8787 --config-path ./run-config.yaml --template-path ./template.yml` — start HTTP API server
 
 ### Frontend (React/Vite, in `adgen-ui/`)
 - `npm run dev` — dev server with HMR (port 5173)

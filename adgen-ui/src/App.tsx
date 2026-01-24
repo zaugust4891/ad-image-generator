@@ -3,11 +3,13 @@ import { listImages, startRun } from "./lib/api";
 import { TemplateEditor } from "./components/TemplateEditor";
 import { ConfigEditor } from "./components/ConfigEditor";
 import { RunMonitor } from "./components/RunMonitor";
+import { LandingPage } from "./components/LandingPage";
 
 
 type Nav = "dashboard" | "config" | "template" | "run" | "gallery";
 
 export default function App() {
+  const [authed, setAuthed] = useState(false);
   const [nav, setNav] = useState<Nav>("dashboard");
   const [runId, setRunId] = useState<string | null>(null);
 
@@ -23,6 +25,10 @@ export default function App() {
     const { run_id } = await startRun();
     setRunId(run_id);
     setNav("run");
+  }
+
+  if (!authed) {
+    return <LandingPage onEnter={() => setAuthed(true)} />;
   }
 
   return (
