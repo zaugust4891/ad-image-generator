@@ -11,6 +11,8 @@ import yaml from "js-yaml";
 export function ConfigEditor() {
   const [mode, setMode] = useState<"form" | "yaml">("form");
   const [raw, setRaw] = useState<string>("");
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState<{ type: "ok" | "err"; msg: string } | null>(null);
 
   const form = useForm<RunConfig>({
     resolver: zodResolver(RunConfigSchema),
@@ -37,15 +39,34 @@ export function ConfigEditor() {
   }, [mode, values]);
 
   async function onSaveForm() {
-    const parsed = RunConfigSchema.parse(values);
-    await saveConfig(parsed as any);
+    setSaving(true);
+    setStatus(null);
+    try {
+      const parsed = RunConfigSchema.parse(values);
+      await saveConfig(parsed as any);
+      reset(parsed);
+      setStatus({ type: "ok", msg: "Saved" });
+    } catch (err: any) {
+      setStatus({ type: "err", msg: err?.message ?? "Save failed" });
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function onSaveYaml() {
-    const obj = yaml.load(raw);
-    const parsed = RunConfigSchema.parse(obj);
-    await saveConfig(parsed as any);
-    reset(parsed);
+    setSaving(true);
+    setStatus(null);
+    try {
+      const obj = yaml.load(raw);
+      const parsed = RunConfigSchema.parse(obj);
+      await saveConfig(parsed as any);
+      reset(parsed);
+      setStatus({ type: "ok", msg: "Saved" });
+    } catch (err: any) {
+      setStatus({ type: "err", msg: err?.message ?? "Save failed" });
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -107,10 +128,15 @@ export function ConfigEditor() {
             <Field label="seed"><input type="number" {...register("seed", { valueAsNumber: true })} className={input()} /></Field>
           </Section>
 
-          <div className="col-span-2 flex gap-2">
-            <button onClick={onSaveForm} disabled={!formState.isValid} className={primary(!formState.isValid)}>
-              Save
+          <div className="col-span-2 flex items-center gap-3">
+            <button onClick={onSaveForm} disabled={!formState.isValid || saving} className={primary(!formState.isValid || saving)}>
+              {saving ? "Saving..." : "Save"}
             </button>
+            {status && (
+              <span className={`text-xs ${status.type === "ok" ? "text-green-400" : "text-red-400"}`}>
+                {status.msg}
+              </span>
+            )}
           </div>
         </div>
       ) : (
@@ -122,11 +148,19 @@ export function ConfigEditor() {
             onChange={(v) => setRaw(v ?? "")}
             options={{ minimap: { enabled: false }, fontSize: 13 }}
           />
-          <div className="flex items-center gap-2 border-t border-zinc-800 p-3">
-            <button onClick={onSaveYaml} className={primary(false)}>Validate + Save YAML</button>
-            <div className="text-xs text-zinc-400">
-              YAML is validated by Zod before saving.
-            </div>
+          <div className="flex items-center gap-3 border-t border-zinc-800 p-3">
+            <button onClick={onSaveYaml} disabled={saving} className={primary(saving)}>
+              {saving ? "Saving..." : "Validate + Save YAML"}
+            </button>
+            {status ? (
+              <span className={`text-xs ${status.type === "ok" ? "text-green-400" : "text-red-400"}`}>
+                {status.msg}
+              </span>
+            ) : (
+              <div className="text-xs text-zinc-400">
+                YAML is validated by Zod before saving.
+              </div>
+            )}
           </div>
         </div>
       )}

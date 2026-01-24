@@ -21,10 +21,21 @@ export default function App() {
     return "Gallery";
   }, [nav]);
 
+  const [runLoading, setRunLoading] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
+
   async function handleStartRun() {
-    const { run_id } = await startRun();
-    setRunId(run_id);
-    setNav("run");
+    setRunLoading(true);
+    setRunError(null);
+    try {
+      const { run_id } = await startRun();
+      setRunId(run_id);
+      setNav("run");
+    } catch (err: any) {
+      setRunError(err?.message ?? "Failed to start run");
+    } finally {
+      setRunLoading(false);
+    }
   }
 
   if (!authed) {
@@ -37,7 +48,7 @@ export default function App() {
         <Sidebar nav={nav} setNav={setNav} />
 
         <main className="rounded-2xl border border-zinc-800 bg-zinc-950/40 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-          <Topbar title={title} onRun={handleStartRun} />
+          <Topbar title={title} onRun={handleStartRun} runLoading={runLoading} runError={runError} />
 
           <div className="p-6">
             {nav === "dashboard" && <Dashboard onOpenGallery={() => setNav("gallery")} />}
@@ -85,15 +96,22 @@ function Sidebar({ nav, setNav }: { nav: Nav; setNav: (n: Nav) => void }) {
   );
 }
 
-function Topbar({ title, onRun }: { title: string; onRun: () => void }) {
+function Topbar({ title, onRun, runLoading, runError }: { title: string; onRun: () => void; runLoading: boolean; runError: string | null }) {
   return (
     <div className="flex items-center justify-between border-b border-zinc-800 px-6 py-4">
-      <div className="text-base font-semibold tracking-tight">{title}</div>
+      <div className="flex items-center gap-3">
+        <div className="text-base font-semibold tracking-tight">{title}</div>
+        {runError && <div className="text-xs text-red-400">{runError}</div>}
+      </div>
       <button
         onClick={onRun}
-        className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-zinc-200"
+        disabled={runLoading}
+        className={[
+          "rounded-xl px-4 py-2 text-sm font-semibold",
+          runLoading ? "bg-zinc-700 text-zinc-300" : "bg-white text-zinc-950 hover:bg-zinc-200",
+        ].join(" ")}
       >
-        Run generation
+        {runLoading ? "Starting..." : "Run generation"}
       </button>
     </div>
   );
