@@ -1,5 +1,5 @@
-provider: { kind: openai, model: gpt-image-1, width: 1024, height: 1024 }
-orchestrator: { target_images: 8, concurrency: 4, queue_cap: 16, rate_per_min: 60, backoff_base_ms: 200, backoff_factor: 2.0, backoff_jitter_ms: 250 }
+provider: { kind: openai, model: dall-e-3, width: 1024, height: 1024 }
+orchestrator: { target_images: 25, concurrency: 4, queue_cap: 32, rate_per_min: 60, backoff_base_ms: 200, backoff_factor: 2.0, backoff_jitter_ms: 250 }
 dedupe: { enabled: false, phash_bits: 64, phash_thresh: 10 }
 post: { thumbnail: false, thumb_max: 256 }
 rewrite: { enabled: false, model: null, system: null, max_tokens: null, cache_file: null }

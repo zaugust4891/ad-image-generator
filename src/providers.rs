@@ -51,17 +51,22 @@ pub struct OpenAIProvider { pub client: reqwest::Client, pub model: String, pub 
 #[async_trait]
 impl ImageProvider for OpenAIProvider {
     async fn generate(&self, prompt: &str) -> Result<ImageResult> {
-        #[derive(serde::Serialize)] struct Req<'a>{prompt:&'a str, size:String, model:String}
+        #[derive(serde::Serialize)] struct Req<'a>{prompt:&'a str, size:String, model:String, #[serde(skip_serializing_if="Option::is_none")] response_format:Option<&'a str>}
         #[derive(serde::Deserialize)] struct Resp{data:Vec<Item>}
         #[derive(serde::Deserialize)] struct Item{b64_json:String}
-        let req = Req{prompt, size: format!("{}x{}", self.w, self.h), model:self.model.clone()};
+        let needs_response_format = self.model.starts_with("dall-e");
+        let req = Req{prompt, size: format!("{}x{}", self.w, self.h), model:self.model.clone(), response_format: if needs_response_format { Some("b64_json") } else { None }};
         let resp = self.client.post("https://api.openai.com/v1/images/generations")
             .bearer_auth(&self.api_key)
             .json(&req)
-            .send().await?
-            .error_for_status()?
-            .json::<Resp>().await?;
-        let bytes = base64::engine::general_purpose::STANDARD.decode(&resp.data[0].b64_json)?;
+            .send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("OpenAI API error {status}: {body}");
+        }
+        let parsed = resp.json::<Resp>().await?;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(&parsed.data[0].b64_json)?;
         Ok(ImageResult{bytes, width:self.w, height:self.h, prompt_used:prompt.to_string(), model:self.model.clone()})
     }
     fn name(&self) -> &str { "openai" }

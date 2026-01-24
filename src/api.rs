@@ -89,9 +89,10 @@ async fn start_run(State(st): State<AppState>) -> Result<Json<StartRunResp>, Api
     let cfg_path = st.config_path.clone();
     let tpl_path = st.template_path.clone();
 
-    // spawn the actual run
+    // spawn the actual run (brief delay lets the frontend SSE subscriber connect)
     let spawn_run_id = run_id.clone();
     tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         if let Err(e) = run_once(cfg_path, tpl_path, None, false, Some(spawn_run_id), Some(tx)).await {
             eprintln!("run error: {e:#}");
         }
