@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { API_BASE_URL as BASE } from "../lib/config";
 
 type RunState = "idle" | "running" | "finished" | "failed";
 
@@ -8,8 +9,6 @@ type RunEvent =
   | { type: "progress"; run_id: string; done: number; total: number }
   | { type: "finished"; run_id: string }
   | { type: "failed"; run_id: string; error: string };
-
-const BASE = "http://127.0.0.1:8787";
 
 export function RunMonitor({
   runId,

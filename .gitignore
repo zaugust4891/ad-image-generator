@@ -1,2 +1,5 @@
 /target
 .env
+
+# Claude Code session logs (local only)
+.claude-session.md

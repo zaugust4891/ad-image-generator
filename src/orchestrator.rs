@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::broadcast;
 use crate::events::RunEvent;
 use crate::{providers::ImageProvider, prompts::VariantGenerator, io::save_image_with_sidecar, manifest::{Manifest, ManifestRecord}, rate_limit::SimpleRateLimiter};
+use crate::backoff::backoff_ms;
 
 pub struct OrchestratorCfg{
     pub run_id: String,
@@ -15,11 +16,8 @@ pub struct OrchestratorCfg{
     pub queue_cap: usize,
     pub rate_per_min: u32,
     pub price_usd_per_image: f64,
-    #[allow(unused)]
     pub backoff_base_ms: u64,
-    #[allow(unused)]
     pub backoff_factor: f64,
-    #[allow(unused)]
     pub backoff_jitter_ms: u64,
     pub progress: Option<MultiProgress>,
     pub events: Option<broadcast::Sender<RunEvent>>,
@@ -83,6 +81,9 @@ pub async fn run_orchestrator(
             dedupe: extras.dedupe.clone(),
         };
         let price = cfg.price_usd_per_image;
+        let backoff_base_ms = cfg.backoff_base_ms;
+        let backoff_factor = cfg.backoff_factor;
+        let backoff_jitter_ms = cfg.backoff_jitter_ms;
         set.spawn(async move {
             emit(&events, RunEvent::Log { run_id: run_id.clone(), msg: format!("#{id} generated prompt") });
 
@@ -98,12 +99,35 @@ pub async fn run_orchestrator(
             }
 
             emit(&events, RunEvent::Log { run_id: run_id.clone(), msg: format!("#{id} provider: call") });
-            // call provider
-            let res = provider.generate(&prompt_used).await;
+            // call provider with retry + backoff
+            const MAX_RETRIES: u32 = 3;
+            let mut last_error = None;
+            let mut attempt = 1;
+            let res = loop {
+                match provider.generate(&prompt_used).await {
+                    Ok(r) => break Some(r),
+                    Err(e) => {
+                        last_error = Some(e);
+                        if attempt >= MAX_RETRIES {
+                            break None;
+                        }
+                        let delay_ms = backoff_ms(attempt, backoff_base_ms, backoff_factor, backoff_jitter_ms);
+                        emit(&events, RunEvent::Log {
+                            run_id: run_id.clone(),
+                            msg: format!("#{id} provider error (attempt {}/{}), retrying in {}ms", attempt, MAX_RETRIES, delay_ms)
+                        });
+                        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                        attempt += 1;
+                    }
+                }
+            };
             let res = match res {
-                Ok(r) => r,
-                Err(e) => {
-                    emit(&events, RunEvent::Log { run_id: run_id.clone(), msg: format!("#{id} provider error: {e:#}") });
+                Some(r) => r,
+                None => {
+                    emit(&events, RunEvent::Log {
+                        run_id: run_id.clone(),
+                        msg: format!("#{id} provider failed after {} attempts: {:#}", MAX_RETRIES, last_error.unwrap())
+                    });
                     return;
                 }
             };
@@ -118,7 +142,11 @@ pub async fn run_orchestrator(
 
             // save
             if let Err(e) = save_image_with_sidecar(&out_dir, &run_id, id, provider.name(), &res, &original, rewritten.as_deref(), price).await {
-                eprintln!("save error: {e:#}"); return;
+                emit(&events, RunEvent::Log {
+                    run_id: run_id.clone(),
+                    msg: format!("#{id} save error: {e:#}")
+                });
+                return;
             }
             let n = done.fetch_add(1, Ordering::Relaxed) + 1;
             emit(&events, RunEvent::Progress {
@@ -128,10 +156,15 @@ pub async fn run_orchestrator(
             });
             emit(&events, RunEvent::Log { run_id: run_id.clone(), msg: format!("#{id} saved (done {n}/{total})") });
 
-            let _ = manifest.append(ManifestRecord{
+            if let Err(e) = manifest.append(ManifestRecord{
                 id, created_at: chrono::Utc::now().to_rfc3339(), provider: provider.name(),
                 model: provider.model(), prompt: &prompt_used, path_png: format!("{:08}-{}-{}.png", id, provider.name(), provider.model()),
-            }).await;
+            }).await {
+                emit(&events, RunEvent::Log {
+                    run_id: run_id.clone(),
+                    msg: format!("#{id} manifest append error: {e:#}")
+                });
+            }
             if let Some(pb) = &pb { pb.inc(1); }
         });
     }

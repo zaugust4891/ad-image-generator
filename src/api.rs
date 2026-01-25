@@ -15,6 +15,7 @@ use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
 use crate::{config::{RunCfg, TemplateYaml}, events::RunEvent, run_once};
+use anyhow::Context;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -26,6 +27,20 @@ pub struct AppState {
 
 
 pub async fn serve(bind: String, config_path: PathBuf, template_path: PathBuf) -> Result<()> {
+    // Validate config and output directory at startup
+    let cfg_txt = tokio::fs::read_to_string(&config_path)
+        .await
+        .context(format!("Failed to read config file: {}", config_path.display()))?;
+    let cfg: RunCfg = serde_yaml::from_str(&cfg_txt)
+        .context("Failed to parse config YAML")?;
+
+    // Validate output directory
+    crate::validate_output_dir(&cfg.out_dir)
+        .await
+        .context("Output directory validation failed")?;
+
+    println!("✅ Output directory validated: {}", cfg.out_dir.display());
+
     let (tx, _rx) = broadcast::channel::<RunEvent>(256);
 
     let state = AppState {
@@ -149,7 +164,7 @@ async fn list_images(State(st): State<AppState>) -> Result<Json<Vec<ImageItem>>,
 
         let name = path.file_name().unwrap().to_string_lossy().to_string();
         items.push(ImageItem {
-            url: format!("http://127.0.0.1:8787/images/{name}"),
+            url: format!("/images/{name}"),
             name,
             created_ms: created,
         });
@@ -217,12 +232,45 @@ fn content_type_for(name: &str) -> &'static str {
 }
 
 #[derive(Debug)]
-struct ApiErr(anyhow::Error);
-impl<E: Into<anyhow::Error>> From<E> for ApiErr {
-    fn from(e: E) -> Self { ApiErr(e.into()) }
+struct ApiErr {
+    status: StatusCode,
+    message: String,
 }
+
+impl ApiErr {
+    fn internal(e: impl std::fmt::Display) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!("Internal error: {}", e),
+        }
+    }
+
+    fn bad_request(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: msg.into(),
+        }
+    }
+}
+
+impl<E: Into<anyhow::Error>> From<E> for ApiErr {
+    fn from(e: E) -> Self {
+        Self::internal(e.into())
+    }
+}
+
 impl IntoResponse for ApiErr {
     fn into_response(self) -> axum::response::Response {
-        (axum::http::StatusCode::INTERNAL_SERVER_ERROR, self.0.to_string()).into_response()
+        #[derive(Serialize)]
+        struct ErrorResponse {
+            error: String,
+        }
+        (
+            self.status,
+            Json(ErrorResponse {
+                error: self.message,
+            }),
+        )
+            .into_response()
     }
 }

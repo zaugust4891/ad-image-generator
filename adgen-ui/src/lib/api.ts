@@ -10,7 +10,7 @@ export type RunConfig = {
 
 export type Template = { brand: string; product: string; styles: string[] };
 
-const BASE = "http://127.0.0.1:8787";
+import { API_BASE_URL as BASE } from "./config";
 
 export async function getConfig(): Promise<RunConfig> {
   const r = await fetch(`${BASE}/api/config`);

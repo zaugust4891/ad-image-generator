@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use indicatif::MultiProgress;
 use std::path::PathBuf;
@@ -50,6 +50,34 @@ enum Command {
     },
 }
 
+/// Validate and prepare the output directory
+pub async fn validate_output_dir(out_dir: &PathBuf) -> Result<()> {
+    // Create directory if it doesn't exist
+    tokio::fs::create_dir_all(out_dir)
+        .await
+        .context(format!("Failed to create output directory: {}", out_dir.display()))?;
+
+    // Verify it's a directory
+    let metadata = tokio::fs::metadata(out_dir)
+        .await
+        .context(format!("Cannot access output directory: {}", out_dir.display()))?;
+
+    if !metadata.is_dir() {
+        anyhow::bail!("Output path exists but is not a directory: {}", out_dir.display());
+    }
+
+    // Test write permissions by creating and removing a test file
+    let test_file = out_dir.join(".write_test");
+    tokio::fs::write(&test_file, b"test")
+        .await
+        .context(format!("Output directory is not writable: {}", out_dir.display()))?;
+    tokio::fs::remove_file(&test_file)
+        .await
+        .ok(); // Ignore errors on cleanup
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env()).init();
@@ -81,7 +109,7 @@ pub async fn run_once(
         let cfg: RunCfg = serde_yaml::from_str(&tokio::fs::read_to_string(&config).await?)?;
         let tpl_yaml: TemplateYaml = serde_yaml::from_str(&tokio::fs::read_to_string(&template).await?)?;
         let out_dir = out_dir.unwrap_or(cfg.clone().out_dir);
-        tokio::fs::create_dir_all(&out_dir).await?;
+        validate_output_dir(&out_dir).await?;
 
         // Provider
         let provider: Arc<dyn ImageProvider> = match cfg.provider.kind.as_str(){
