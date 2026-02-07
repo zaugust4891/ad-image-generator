@@ -1,3 +1,5 @@
+import { API_BASE_URL as BASE } from "./config";
+
 export type RunConfig = {
   provider: { kind: "mock" | "openai"; model: string; width: number; height: number; price_usd_per_image: number };
   orchestrator: { target_images: number; concurrency: number; queue_cap: number; rate_per_min: number; backoff_base_ms: number; backoff_factor: number; backoff_jitter_ms: number };
@@ -10,7 +12,69 @@ export type RunConfig = {
 
 export type Template = { brand: string; product: string; styles: string[] };
 
-import { API_BASE_URL as BASE } from "./config";
+type AdTemplateYaml = { brand: string; product: string; styles: string[] };
+type GeneralPromptYaml = { prompt: string };
+type TemplateYaml = { mode: { AdTemplate: AdTemplateYaml } | { GeneralPrompt: GeneralPromptYaml } };
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null;
+}
+
+function toTemplateForm(v: unknown): Template {
+  if (!isRecord(v)) {
+    throw new Error("Template payload is not an object");
+  }
+
+  // Backward-compatible support: plain object template shape.
+  if (
+    typeof v.brand === "string" &&
+    typeof v.product === "string" &&
+    Array.isArray(v.styles)
+  ) {
+    return {
+      brand: v.brand,
+      product: v.product,
+      styles: v.styles.map(String),
+    };
+  }
+
+  // Current backend shape: { mode: { AdTemplate: { ... } } }
+  if (isRecord(v.mode) && isRecord(v.mode.AdTemplate)) {
+    const ad = v.mode.AdTemplate;
+    if (
+      typeof ad.brand === "string" &&
+      typeof ad.product === "string" &&
+      Array.isArray(ad.styles)
+    ) {
+      return {
+        brand: ad.brand,
+        product: ad.product,
+        styles: ad.styles.map(String),
+      };
+    }
+    throw new Error("Invalid AdTemplate shape from backend");
+  }
+
+  if (isRecord(v.mode) && isRecord(v.mode.GeneralPrompt)) {
+    throw new Error(
+      "Template is in GeneralPrompt mode. Current Template editor supports AdTemplate fields only."
+    );
+  }
+
+  throw new Error("Unrecognized template format from backend");
+}
+
+function toTemplateYaml(template: Template): TemplateYaml {
+  return {
+    mode: {
+      AdTemplate: {
+        brand: template.brand,
+        product: template.product,
+        styles: template.styles,
+      },
+    },
+  };
+}
 
 export async function getConfig(): Promise<RunConfig> {
   const r = await fetch(`${BASE}/api/config`);
@@ -25,10 +89,14 @@ export async function saveConfig(cfg: RunConfig): Promise<void> {
 export async function getTemplate(): Promise<Template> {
   const r = await fetch(`${BASE}/api/template`);
   if (!r.ok) throw new Error("Failed to load template");
-  return r.json();
+  return toTemplateForm(await r.json());
 }
 export async function saveTemplate(t: Template): Promise<void> {
-  const r = await fetch(`${BASE}/api/template`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(t) });
+  const r = await fetch(`${BASE}/api/template`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(toTemplateYaml(t)),
+  });
   if (!r.ok) throw new Error("Failed to save template");
 }
 
@@ -81,7 +149,7 @@ export async function validateConfig(
   const r = await fetch(`${BASE}/api/config/validate`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ config, template }),
+    body: JSON.stringify({ config, template: toTemplateYaml(template) }),
   });
   if (!r.ok) throw new Error("Validation request failed");
   return r.json();

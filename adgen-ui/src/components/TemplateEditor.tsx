@@ -24,10 +24,24 @@ export function TemplateEditor() {
   const values = watch();
 
   useEffect(() => {
-    getTemplate().then((tpl) => {
-      reset(tpl);
-      setRaw(yaml.dump(tpl));
-    });
+    let active = true;
+    getTemplate()
+      .then((tpl) => {
+        if (!active) return;
+        reset(tpl);
+        setRaw(yaml.dump(tpl));
+      })
+      .catch((err: any) => {
+        if (!active) return;
+        setStatus({
+          type: "err",
+          msg: err?.message ?? "Failed to load template",
+        });
+      });
+
+    return () => {
+      active = false;
+    };
   }, [reset]);
 
   // Keep raw YAML in sync when user is in YAML mode (nice UX)
