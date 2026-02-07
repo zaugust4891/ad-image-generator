@@ -119,7 +119,7 @@ pub async fn run_once(
             }
             "openai" => {
                 let key = std::env::var(cfg.provider.api_key_env.clone().unwrap_or_else(||"OPENAI_API_KEY".into()))?;
-                let boxed: Box<dyn ImageProvider> = Box::new(OpenAIProvider{ client:reqwest::Client::new(), model: cfg.provider.model.clone().unwrap_or_else(||"gpt-image-1".into()), api_key: key, w: cfg.provider.width.unwrap_or(1024), h: cfg.provider.height.unwrap_or(1024), price: cfg.provider.price_usd_per_image.unwrap_or(0.0)});
+                let boxed: Box<dyn ImageProvider> = Box::new(OpenAIProvider{ client:reqwest::Client::new(), model: cfg.provider.model.clone().unwrap_or_else(||"gpt-image-1.5".into()), api_key: key, w: cfg.provider.width.unwrap_or(1024), h: cfg.provider.height.unwrap_or(1024), price: cfg.provider.price_usd_per_image.unwrap_or(0.0)});
                 Arc::from(boxed)
             }
             other => anyhow::bail!("unknown provider: {other}"),
