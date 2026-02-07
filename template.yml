@@ -1,7 +1,7 @@
 mode: !AdTemplate
-brand: Texas Weiner II
-product: Canned Hot Dog Chili
-styles:
+  brand: Texas Weiner II
+  product: Canned Hot Dog Chili
+  styles:
   - '"Classic Americana food photography with warm diner-style lighting, the open chili can poured generously over a grilled hot dog on a white paper tray, soft steam rising, shallow depth of field, red, mustard yellow, and stainless steel color palette, nostalgic roadside stand mood"'
   - '"Bold minimalist product shot with a clean white background, dramatic single-source side lighting casting strong shadows, the chili can as the hero with a single hot dog bun accent, muted reds and browns, confident and no-nonsense atmosphere"'
   - '"Dreamy retro-inspired food styling reminiscent of mid-century advertising, soft-focus lens with slight film grain, pastel teal and cream backdrop, chili appearing rich and glossy, playful and comforting mood"'
