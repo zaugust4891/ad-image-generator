@@ -93,6 +93,10 @@ async fn main() -> Result<()> {
     }
 }
 
+fn make_rewriter(key: String, model: String, system: String, max_tokens: u32) -> Arc<dyn rewrite::PromptRewriter> {
+    Arc::new(OpenAIRewriter::new(key, model, system, max_tokens))
+}
+
 pub async fn run_once(
     config: PathBuf,
     template: PathBuf,
@@ -114,13 +118,11 @@ pub async fn run_once(
         // Provider
         let provider: Arc<dyn ImageProvider> = match cfg.provider.kind.as_str(){
             "mock" => {
-                let boxed: Box<dyn ImageProvider> = Box::new(MockProvider{ model: cfg.provider.model.clone().unwrap_or_else(||"mock-v1".into()), w: cfg.provider.width.unwrap_or(512), h: cfg.provider.height.unwrap_or(512) });
-                Arc::from(boxed)
+                Arc::new(MockProvider{ model: cfg.provider.model.clone().unwrap_or_else(||"mock-v1".into()), w: cfg.provider.width.unwrap_or(512), h: cfg.provider.height.unwrap_or(512) }) as Arc<dyn ImageProvider>
             }
             "openai" => {
                 let key = std::env::var(cfg.provider.api_key_env.clone().unwrap_or_else(||"OPENAI_API_KEY".into()))?;
-                let boxed: Box<dyn ImageProvider> = Box::new(OpenAIProvider{ client:reqwest::Client::new(), model: cfg.provider.model.clone().unwrap_or_else(||"gpt-image-1.5".into()), api_key: key, w: cfg.provider.width.unwrap_or(1024), h: cfg.provider.height.unwrap_or(1024), price: cfg.provider.price_usd_per_image.unwrap_or(0.0)});
-                Arc::from(boxed)
+                Arc::new(OpenAIProvider{ client:reqwest::Client::new(), model: cfg.provider.model.clone().unwrap_or_else(||"gpt-image-1.5".into()), api_key: key, w: cfg.provider.width.unwrap_or(1024), h: cfg.provider.height.unwrap_or(1024), price: cfg.provider.price_usd_per_image.unwrap_or(0.0)}) as Arc<dyn ImageProvider>
             }
             other => anyhow::bail!("unknown provider: {other}"),
         };
@@ -143,13 +145,7 @@ pub async fn run_once(
         let rewriter_system = cfg.rewrite.system.clone().unwrap_or_else(||"Polish and improve the ad prompt while preserving its core intent.".into());
         let rewriter: Option<Arc<dyn rewrite::PromptRewriter>> = if cfg.rewrite.enabled {
             let key = std::env::var(cfg.provider.api_key_env.clone().unwrap_or_else(||"OPENAI_API_KEY".into())).unwrap_or_default();
-            let r: Arc<dyn rewrite::PromptRewriter> = Arc::new(OpenAIRewriter::new(
-                key,
-                rewriter_model.clone(),
-                rewriter_system.clone(),
-                cfg.rewrite.max_tokens.unwrap_or(64),
-            ));
-            Some(r)
+            Some(make_rewriter(key, rewriter_model.clone(), rewriter_system.clone(), cfg.rewrite.max_tokens.unwrap_or(64)))
         } else { None };
 
         // Rewrite cache (only when rewriting is enabled and cache_file is set)

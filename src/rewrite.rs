@@ -1,20 +1,26 @@
 use anyhow::Result;
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{path::PathBuf, sync::Arc};
+use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
 use tokio::{fs, io::{AsyncBufReadExt, AsyncWriteExt}, sync::Mutex};
 
-#[async_trait]
 pub trait PromptRewriter: Send + Sync {
-    async fn rewrite(&self, original: &str) -> Result<String>;
+    fn rewrite<'a>(
+        &'a self,
+        original: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>>;
     fn name(&self) -> &'static str;
 }
 
 pub struct NoopRewriter;
-#[async_trait]
 impl PromptRewriter for NoopRewriter {
-    async fn rewrite(&self, original: &str) -> Result<String> { Ok(original.to_string()) }
+    fn rewrite<'a>(
+        &'a self,
+        original: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>> {
+        Box::pin(async move { Ok(original.to_string()) })
+    }
+
     fn name(&self) -> &'static str { "noop" }
 }
 
@@ -30,22 +36,27 @@ impl OpenAIRewriter{
 #[derive(Deserialize)] struct Choice{ message: MsgOwned }
 #[derive(Deserialize)] struct MsgOwned{ #[allow(unused)] role:String, content:String }
 
-#[async_trait]
 impl PromptRewriter for OpenAIRewriter {
-    async fn rewrite(&self, original: &str) -> Result<String> {
-        let req = ChatReq{
-            model:&self.model,
-            max_tokens:self.max_tokens,
-            messages:vec![
-                Msg{role:"system", content:&self.system},
-                Msg{role:"user", content:original},
-            ],
-        };
-        let resp = self.client.post("https://api.openai.com/v1/chat/completions")
-            .bearer_auth(&self.api_key)
-            .json(&req).send().await?.error_for_status()?.json::<ChatResp>().await?;
-        Ok(resp.choices.get(0).map(|c| c.message.content.clone()).unwrap_or_else(|| original.to_string()))
+    fn rewrite<'a>(
+        &'a self,
+        original: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>> {
+        Box::pin(async move {
+            let req = ChatReq{
+                model:&self.model,
+                max_tokens:self.max_tokens,
+                messages:vec![
+                    Msg{role:"system", content:&self.system},
+                    Msg{role:"user", content:original},
+                ],
+            };
+            let resp = self.client.post("https://api.openai.com/v1/chat/completions")
+                .bearer_auth(&self.api_key)
+                .json(&req).send().await?.error_for_status()?.json::<ChatResp>().await?;
+            Ok(resp.choices.get(0).map(|c| c.message.content.clone()).unwrap_or_else(|| original.to_string()))
+        })
     }
+
     fn name(&self) -> &'static str { "openai-rewriter" }
 }
 
