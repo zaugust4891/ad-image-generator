@@ -42,4 +42,24 @@ pub struct RunCfg{
     pub seed: u64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TemplateYaml{ pub brand:String, pub product:String, pub styles:Vec<String> }
+pub enum Mode {
+    AdTemplate(AdTemplate),
+    GeneralPrompt(GeneralPrompt),
+} 
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TemplateYaml {
+    pub mode: Mode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdTemplate{ 
+    pub brand:String,
+    pub product:String, 
+    pub styles:Vec<String> 
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeneralPrompt{ 
+    pub prompt:String 
+}

@@ -7,10 +7,10 @@ use tokio::sync::broadcast;
 use tracing_subscriber::EnvFilter;
 
 mod backoff; mod config; mod dedupe; mod events; mod io; mod manifest; mod orchestrator; mod post; mod providers; mod prompts; mod rate_limit; mod rewrite; mod api;
-use config::{RunCfg, TemplateYaml};
+use config::{Mode, RunCfg, TemplateYaml};
 
 use providers::{ImageProvider, MockProvider, OpenAIProvider};
-use prompts::{PromptTemplate, VariantGenerator};
+use prompts::{PromptGeneral, PromptStyle, PromptTemplate, VariantGenerator};
 use rewrite::{OpenAIRewriter, RewriteCache};
 
 #[derive(Parser, Debug)]
@@ -126,8 +126,17 @@ pub async fn run_once(
         };
 
         // Prompt generator
-        let tpl = PromptTemplate{ brand: tpl_yaml.brand, product: tpl_yaml.product, styles: tpl_yaml.styles };
-        let generator = VariantGenerator::new(tpl, cfg.seed);
+        let style = match tpl_yaml.mode {
+            Mode::AdTemplate(tpl) => PromptStyle::AdTemplate(PromptTemplate {
+                brand: tpl.brand,
+                product: tpl.product,
+                styles: tpl.styles,
+            }),
+            Mode::GeneralPrompt(prompt) => PromptStyle::GeneralPrompt(PromptGeneral {
+                prompt: prompt.prompt,
+            }),
+        };
+        let generator = VariantGenerator::new(style, cfg.seed);
 
         // Rewriter
         let rewriter_model = cfg.rewrite.model.clone().unwrap_or_else(||"gpt-4o-mini".into());

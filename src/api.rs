@@ -14,7 +14,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
-use crate::{config::{RunCfg, TemplateYaml}, events::RunEvent, run_once};
+use crate::{config::{Mode, RunCfg, TemplateYaml}, events::RunEvent, run_once};
 use anyhow::Context;
 
 #[derive(Clone)]
@@ -159,29 +159,42 @@ async fn validate_config(
         }
     }
 
-    // Validate template
-    if req.template.styles.is_empty() {
-        errors.push(ValidationError {
-            field: "styles".to_string(),
-            message: "At least one style is required".to_string(),
-            suggestion: None,
-        });
-    }
+    // Validate template by prompt mode
+    match &req.template.mode {
+        Mode::AdTemplate(tpl) => {
+            if tpl.styles.is_empty() {
+                errors.push(ValidationError {
+                    field: "mode.AdTemplate.styles".to_string(),
+                    message: "At least one style is required".to_string(),
+                    suggestion: None,
+                });
+            }
 
-    if req.template.brand.trim().is_empty() {
-        errors.push(ValidationError {
-            field: "brand".to_string(),
-            message: "Brand cannot be empty".to_string(),
-            suggestion: None,
-        });
-    }
+            if tpl.brand.trim().is_empty() {
+                errors.push(ValidationError {
+                    field: "mode.AdTemplate.brand".to_string(),
+                    message: "Brand cannot be empty".to_string(),
+                    suggestion: None,
+                });
+            }
 
-    if req.template.product.trim().is_empty() {
-        errors.push(ValidationError {
-            field: "product".to_string(),
-            message: "Product cannot be empty".to_string(),
-            suggestion: None,
-        });
+            if tpl.product.trim().is_empty() {
+                errors.push(ValidationError {
+                    field: "mode.AdTemplate.product".to_string(),
+                    message: "Product cannot be empty".to_string(),
+                    suggestion: None,
+                });
+            }
+        }
+        Mode::GeneralPrompt(prompt) => {
+            if prompt.prompt.trim().is_empty() {
+                errors.push(ValidationError {
+                    field: "mode.GeneralPrompt.prompt".to_string(),
+                    message: "Prompt cannot be empty".to_string(),
+                    suggestion: None,
+                });
+            }
+        }
     }
 
     // Warnings
@@ -384,39 +397,12 @@ impl ApiErr {
         }
     }
 
-    fn bad_request(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::BAD_REQUEST,
-            code: "bad_request".to_string(),
-            message: msg.into(),
-            suggestion: None,
-        }
-    }
-
     fn run_already_active(run_id: &str) -> Self {
         Self {
             status: StatusCode::CONFLICT,
             code: "run_already_active".to_string(),
             message: format!("A run is already in progress: {}", run_id),
             suggestion: Some("Wait for the current run to complete, or navigate to Run Monitor to view progress.".to_string()),
-        }
-    }
-
-    fn config_read_failed(e: impl std::fmt::Display) -> Self {
-        Self {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            code: "config_read_failed".to_string(),
-            message: format!("Failed to read configuration: {}", e),
-            suggestion: Some("Ensure the config file exists and is readable.".to_string()),
-        }
-    }
-
-    fn config_parse_failed(e: impl std::fmt::Display) -> Self {
-        Self {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            code: "config_parse_failed".to_string(),
-            message: format!("Failed to parse configuration: {}", e),
-            suggestion: Some("Check the config YAML syntax. Use the Validate button to check for errors.".to_string()),
         }
     }
 }
