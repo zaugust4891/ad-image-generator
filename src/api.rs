@@ -8,7 +8,7 @@ use axum::{
     Json, Router,
 };
 use futures_util::stream::StreamExt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, Mutex};
 use tokio_stream::wrappers::BroadcastStream;
 use tower_http::cors::CorsLayer;
@@ -52,8 +52,10 @@ pub async fn serve(bind: String, config_path: PathBuf, template_path: PathBuf) -
 
     let app = Router::new()
         .route("/api/config", get(get_config).put(put_config))
+        .route("/api/config/validate", post(validate_config))
         .route("/api/template", get(get_template).put(put_template))
         .route("/api/run", post(start_run))
+        .route("/api/run/current", get(get_current_run))
         .route("/api/run/{id}/events", get(run_events))
         .route("/api/images", get(list_images))
         .route("/images/{name}", get(get_image))
@@ -90,10 +92,129 @@ async fn put_template(State(st): State<AppState>, Json(tpl): Json<TemplateYaml>)
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
+#[derive(Deserialize)]
+struct ValidateConfigReq {
+    config: RunCfg,
+    template: TemplateYaml,
+}
+
+#[derive(Serialize)]
+struct ValidationError {
+    field: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    suggestion: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ValidationResult {
+    valid: bool,
+    errors: Vec<ValidationError>,
+    warnings: Vec<String>,
+}
+
+async fn validate_config(
+    State(_st): State<AppState>,
+    Json(req): Json<ValidateConfigReq>,
+) -> Json<ValidationResult> {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+
+    // Validate concurrency
+    if req.config.orchestrator.concurrency == 0 {
+        errors.push(ValidationError {
+            field: "orchestrator.concurrency".to_string(),
+            message: "Concurrency must be greater than 0".to_string(),
+            suggestion: Some("Set concurrency to at least 1".to_string()),
+        });
+    }
+
+    // Validate target_images
+    if req.config.orchestrator.target_images == 0 {
+        errors.push(ValidationError {
+            field: "orchestrator.target_images".to_string(),
+            message: "Target images must be greater than 0".to_string(),
+            suggestion: None,
+        });
+    }
+
+    // Validate output directory
+    if let Err(e) = crate::validate_output_dir(&req.config.out_dir).await {
+        errors.push(ValidationError {
+            field: "out_dir".to_string(),
+            message: format!("Output directory error: {}", e),
+            suggestion: Some("Ensure directory exists and is writable".to_string()),
+        });
+    }
+
+    // Validate API key for OpenAI provider
+    if req.config.provider.kind == "openai" {
+        let key_env = req.config.provider.api_key_env.as_deref().unwrap_or("OPENAI_API_KEY");
+        if std::env::var(key_env).is_err() {
+            errors.push(ValidationError {
+                field: "provider.api_key_env".to_string(),
+                message: format!("Environment variable {} not set", key_env),
+                suggestion: Some(format!("Run: export {}=sk-...", key_env)),
+            });
+        }
+    }
+
+    // Validate template
+    if req.template.styles.is_empty() {
+        errors.push(ValidationError {
+            field: "styles".to_string(),
+            message: "At least one style is required".to_string(),
+            suggestion: None,
+        });
+    }
+
+    if req.template.brand.trim().is_empty() {
+        errors.push(ValidationError {
+            field: "brand".to_string(),
+            message: "Brand cannot be empty".to_string(),
+            suggestion: None,
+        });
+    }
+
+    if req.template.product.trim().is_empty() {
+        errors.push(ValidationError {
+            field: "product".to_string(),
+            message: "Product cannot be empty".to_string(),
+            suggestion: None,
+        });
+    }
+
+    // Warnings
+    if req.config.orchestrator.concurrency as u32 > req.config.orchestrator.rate_per_min {
+        warnings.push(format!(
+            "Concurrency ({}) exceeds rate limit ({}/min) - may cause burst throttling",
+            req.config.orchestrator.concurrency, req.config.orchestrator.rate_per_min
+        ));
+    }
+
+    if req.config.orchestrator.rate_per_min > 60 {
+        warnings.push("High rate limit may cause API throttling".to_string());
+    }
+
+    Json(ValidationResult {
+        valid: errors.is_empty(),
+        errors,
+        warnings,
+    })
+}
+
 #[derive(Serialize)]
 struct StartRunResp { run_id: String }
 
 async fn start_run(State(st): State<AppState>) -> Result<Json<StartRunResp>, ApiErr> {
+    // Check if a run is already in progress
+    {
+        let current = st.current_run.lock().await;
+        if let Some(existing_id) = &*current {
+            return Err(ApiErr::run_already_active(existing_id));
+        }
+    }
+
     // create run id
     let run_id = format!("run-{}", Uuid::new_v4());
 
@@ -103,17 +224,31 @@ async fn start_run(State(st): State<AppState>) -> Result<Json<StartRunResp>, Api
     let tx = st.events_tx.clone();
     let cfg_path = st.config_path.clone();
     let tpl_path = st.template_path.clone();
+    let current_run_ref = st.current_run.clone();
 
     // spawn the actual run (brief delay lets the frontend SSE subscriber connect)
     let spawn_run_id = run_id.clone();
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        if let Err(e) = run_once(cfg_path, tpl_path, None, false, Some(spawn_run_id), Some(tx)).await {
+        let result = run_once(cfg_path, tpl_path, None, false, Some(spawn_run_id), Some(tx)).await;
+
+        // Clear current run on completion or failure
+        *current_run_ref.lock().await = None;
+
+        if let Err(e) = result {
             eprintln!("run error: {e:#}");
         }
     });
 
     Ok(Json(StartRunResp { run_id }))
+}
+
+#[derive(Serialize)]
+struct CurrentRunResp { run_id: Option<String> }
+
+async fn get_current_run(State(st): State<AppState>) -> Json<CurrentRunResp> {
+    let current = st.current_run.lock().await;
+    Json(CurrentRunResp { run_id: current.clone() })
 }
 
 pub async fn run_events(
@@ -234,21 +369,54 @@ fn content_type_for(name: &str) -> &'static str {
 #[derive(Debug)]
 struct ApiErr {
     status: StatusCode,
+    code: String,
     message: String,
+    suggestion: Option<String>,
 }
 
 impl ApiErr {
     fn internal(e: impl std::fmt::Display) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
+            code: "internal_error".to_string(),
             message: format!("Internal error: {}", e),
+            suggestion: None,
         }
     }
 
     fn bad_request(msg: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
+            code: "bad_request".to_string(),
             message: msg.into(),
+            suggestion: None,
+        }
+    }
+
+    fn run_already_active(run_id: &str) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            code: "run_already_active".to_string(),
+            message: format!("A run is already in progress: {}", run_id),
+            suggestion: Some("Wait for the current run to complete, or navigate to Run Monitor to view progress.".to_string()),
+        }
+    }
+
+    fn config_read_failed(e: impl std::fmt::Display) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            code: "config_read_failed".to_string(),
+            message: format!("Failed to read configuration: {}", e),
+            suggestion: Some("Ensure the config file exists and is readable.".to_string()),
+        }
+    }
+
+    fn config_parse_failed(e: impl std::fmt::Display) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            code: "config_parse_failed".to_string(),
+            message: format!("Failed to parse configuration: {}", e),
+            suggestion: Some("Check the config YAML syntax. Use the Validate button to check for errors.".to_string()),
         }
     }
 }
@@ -264,11 +432,16 @@ impl IntoResponse for ApiErr {
         #[derive(Serialize)]
         struct ErrorResponse {
             error: String,
+            code: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            suggestion: Option<String>,
         }
         (
             self.status,
             Json(ErrorResponse {
                 error: self.message,
+                code: self.code,
+                suggestion: self.suggestion,
             }),
         )
             .into_response()

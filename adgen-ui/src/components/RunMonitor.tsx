@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE_URL as BASE } from "../lib/config";
 
 type RunState = "idle" | "running" | "finished" | "failed";
+type ConnectionState = "connecting" | "connected" | "disconnected" | "reconnecting";
 
 type RunEvent =
   | { type: "started"; run_id: string; total: number }
@@ -10,20 +11,34 @@ type RunEvent =
   | { type: "finished"; run_id: string }
   | { type: "failed"; run_id: string; error: string };
 
+const MAX_RECONNECT_ATTEMPTS = 5;
+const BASE_DELAY_MS = 1000;
+const MAX_DELAY_MS = 30000;
+
+function getBackoffDelay(attempt: number): number {
+  return Math.min(BASE_DELAY_MS * Math.pow(2, attempt), MAX_DELAY_MS);
+}
+
 export function RunMonitor({
   runId,
   onStartRun,
+  onImageAdded,
 }: {
   runId: string | null;
   onStartRun: () => Promise<void>;
+  onImageAdded?: () => void;
 }) {
   const [state, setState] = useState<RunState>("idle");
+  const [connectionState, setConnectionState] = useState<ConnectionState>("disconnected");
   const [done, setDone] = useState(0);
   const [total, setTotal] = useState(0);
   const [logs, setLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const logRef = useRef<HTMLDivElement | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const esRef = useRef<EventSource | null>(null);
 
   const pct = useMemo(() => {
     if (!total) return 0;
@@ -41,61 +56,111 @@ export function RunMonitor({
   useEffect(() => {
     if (!runId) return;
 
-    setState("running");
-    setLogs((prev) => [...prev, `Connected to run ${runId}`]);
-    setError(null);
+    let isMounted = true;
 
-    const es = new EventSource(`${BASE}/api/run/${runId}/events`);
+    function connect() {
+      if (!isMounted || !runId) return;
 
-    es.addEventListener("message", (msg) => {
-      try {
-        const evt = JSON.parse((msg as MessageEvent).data) as RunEvent;
+      setConnectionState(reconnectAttemptRef.current > 0 ? "reconnecting" : "connecting");
 
-        switch (evt.type) {
-          case "started":
-            setTotal(evt.total);
-            setDone(0);
-            setState("running");
-            setLogs((prev) => [...prev, `Run started: total=${evt.total}`]);
-            break;
+      const es = new EventSource(`${BASE}/api/run/${runId}/events`);
+      esRef.current = es;
 
-          case "log":
-            setLogs((prev) => [...prev, evt.msg]);
-            break;
+      es.onopen = () => {
+        if (!isMounted) return;
+        setConnectionState("connected");
+        reconnectAttemptRef.current = 0;
+        setLogs((prev) => [...prev, `Connected to run ${runId}`]);
+      };
 
-          case "progress":
-            setDone(evt.done);
-            setTotal(evt.total);
-            break;
+      es.addEventListener("message", (msg) => {
+        if (!isMounted) return;
+        try {
+          const evt = JSON.parse((msg as MessageEvent).data) as RunEvent;
 
-          case "finished":
-            setState("finished");
-            setLogs((prev) => [...prev, "✅ Finished"]);
-            es.close();
-            break;
+          switch (evt.type) {
+            case "started":
+              setTotal(evt.total);
+              setDone(0);
+              setState("running");
+              setLogs((prev) => [...prev, `Run started: total=${evt.total}`]);
+              break;
 
-          case "failed":
-            setState("failed");
-            setError(evt.error);
-            setLogs((prev) => [...prev, `❌ Failed: ${evt.error}`]);
-            es.close();
-            break;
+            case "log":
+              setLogs((prev) => [...prev, evt.msg]);
+              break;
+
+            case "progress":
+              setDone(evt.done);
+              setTotal(evt.total);
+              onImageAdded?.();
+              break;
+
+            case "finished":
+              setState("finished");
+              setConnectionState("disconnected");
+              setLogs((prev) => [...prev, "✅ Finished"]);
+              es.close();
+              break;
+
+            case "failed":
+              setState("failed");
+              setConnectionState("disconnected");
+              setError(evt.error);
+              setLogs((prev) => [...prev, `❌ Failed: ${evt.error}`]);
+              es.close();
+              break;
+          }
+        } catch (e) {
+          setLogs((prev) => [...prev, `⚠️ Bad event payload: ${(e as Error).message}`]);
         }
-      } catch (e) {
-        setLogs((prev) => [...prev, `⚠️ Bad event payload: ${(e as Error).message}`]);
-      }
-    });
+      });
 
-    es.onerror = () => {
-      // This fires on disconnects; not always fatal, but we should surface it.
-      setLogs((prev) => [...prev, "⚠️ SSE connection error/disconnected"]);
-      // Do not immediately set failed, because EventSource sometimes reconnects.
-    };
+      es.onerror = () => {
+        if (!isMounted) return;
+        es.close();
+        esRef.current = null;
+
+        // Only attempt reconnection if the run is still in progress
+        if (state !== "finished" && state !== "failed") {
+          setConnectionState("disconnected");
+
+          if (reconnectAttemptRef.current < MAX_RECONNECT_ATTEMPTS) {
+            const delay = getBackoffDelay(reconnectAttemptRef.current);
+            setLogs((prev) => [
+              ...prev,
+              `⚠️ Connection lost. Reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${reconnectAttemptRef.current + 1}/${MAX_RECONNECT_ATTEMPTS})`,
+            ]);
+
+            reconnectTimeoutRef.current = setTimeout(() => {
+              reconnectAttemptRef.current += 1;
+              connect();
+            }, delay);
+          } else {
+            setLogs((prev) => [
+              ...prev,
+              "❌ Max reconnection attempts reached. Please refresh the page or start a new run.",
+            ]);
+          }
+        }
+      };
+    }
+
+    setState("running");
+    setError(null);
+    reconnectAttemptRef.current = 0;
+    connect();
 
     return () => {
-      es.close();
+      isMounted = false;
+      esRef.current?.close();
+      esRef.current = null;
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
     };
-  }, [runId]);
+  }, [runId, onImageAdded]);
 
   return (
     <div className="grid gap-4">
@@ -108,6 +173,7 @@ export function RunMonitor({
         </button>
 
         <StatusPill state={state} />
+        <ConnectionIndicator state={connectionState} />
 
         <div className="ml-auto text-xs text-zinc-400">
           {total ? `${done}/${total} (${pct}%)` : "No run yet"}
@@ -149,7 +215,7 @@ export function RunMonitor({
   );
 }
 
-function StatusPill({ state }: { state: "idle" | "running" | "finished" | "failed" }) {
+function StatusPill({ state }: { state: RunState }) {
   const cls =
     state === "running"
       ? "border-zinc-700 text-zinc-200"
@@ -163,4 +229,31 @@ function StatusPill({ state }: { state: "idle" | "running" | "finished" | "faile
     state === "running" ? "Running" : state === "finished" ? "Finished" : state === "failed" ? "Failed" : "Idle";
 
   return <div className={`rounded-full border px-3 py-1 text-xs ${cls}`}>{label}</div>;
+}
+
+function ConnectionIndicator({ state }: { state: ConnectionState }) {
+  const dotColor =
+    state === "connected"
+      ? "bg-emerald-500"
+      : state === "connecting" || state === "reconnecting"
+      ? "bg-yellow-500"
+      : "bg-zinc-500";
+
+  const animate = state === "connecting" || state === "reconnecting" ? "animate-pulse" : "";
+
+  const label =
+    state === "connected"
+      ? "Connected"
+      : state === "connecting"
+      ? "Connecting..."
+      : state === "reconnecting"
+      ? "Reconnecting..."
+      : "Disconnected";
+
+  return (
+    <div className="flex items-center gap-1.5 text-xs text-zinc-400">
+      <div className={`h-2 w-2 rounded-full ${dotColor} ${animate}`} />
+      {label}
+    </div>
+  );
 }

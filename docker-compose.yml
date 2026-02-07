@@ -1,0 +1,32 @@
+version: '3.8'
+services:
+  dev-sandbox:
+    build: .
+    volumes:
+      - .:/workspace
+      - cargo-cache:/root/.cargo/registry
+      - cargo-target:/workspace/target
+      - node-modules:/workspace/adgen-ui/node_modules
+    ports:
+      - "5174:5173"     # Vite React dev server (host:container)
+      - "8788:8787"     # Rust backend API (host:container)
+    environment:
+      - RUST_BACKTRACE=1
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - VITE_API_BASE_URL=http://localhost:8788
+    stdin_open: true
+    tty: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    network_mode: bridge
+
+volumes:
+  cargo-cache:
+  cargo-target:
+  node-modules:

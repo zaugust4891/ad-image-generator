@@ -25,6 +25,9 @@ pub struct OrchestratorCfg{
 
 pub struct OrchestratorExtras{
     pub rewriter: Option<Arc<dyn crate::rewrite::PromptRewriter>>,
+    pub rewriter_model: Option<String>,
+    pub rewriter_system: Option<String>,
+    pub rewrite_cache: Option<Arc<crate::rewrite::RewriteCache>>,
     pub post: Arc<crate::post::PostProcessor>,
     pub dedupe: Option<Arc<tokio::sync::Mutex<crate::dedupe::PerceptualDeduper>>>,
 }
@@ -77,6 +80,9 @@ pub async fn run_orchestrator(
         let done = done.clone();
         let extras = OrchestratorExtras{
             rewriter: extras.rewriter.clone(),
+            rewriter_model: extras.rewriter_model.clone(),
+            rewriter_system: extras.rewriter_system.clone(),
+            rewrite_cache: extras.rewrite_cache.clone(),
             post: extras.post.clone(),
             dedupe: extras.dedupe.clone(),
         };
@@ -92,10 +98,44 @@ pub async fn run_orchestrator(
             let mut prompt_used = original.clone();
             let mut rewritten: Option<String> = None;
             if let Some(rw) = &extras.rewriter {
-                emit(&events, RunEvent::Log { run_id: run_id.clone(), msg: format!("#{id} rewrite: start") });
-                let maybe = rw.rewrite(&original).await.unwrap_or(original.clone());
-                if maybe != original { rewritten = Some(maybe.clone()); prompt_used = maybe; }
-                 emit(&events, RunEvent::Log { run_id: run_id.clone(), msg: format!("#{id} rewrite: changed") });
+                // Generate cache key
+                let cache_key = crate::rewrite::cache_key(
+                    &original,
+                    rw.name(),
+                    extras.rewriter_model.as_deref().unwrap_or(""),
+                    extras.rewriter_system.as_deref().unwrap_or(""),
+                );
+
+                // Check cache first
+                let cached = if let Some(cache) = &extras.rewrite_cache {
+                    cache.get(&cache_key).await
+                } else {
+                    None
+                };
+
+                let maybe = if let Some(cached_val) = cached {
+                    emit(&events, RunEvent::Log { run_id: run_id.clone(), msg: format!("#{id} rewrite: cache hit") });
+                    cached_val
+                } else {
+                    emit(&events, RunEvent::Log { run_id: run_id.clone(), msg: format!("#{id} rewrite: calling API") });
+                    let result = rw.rewrite(&original).await.unwrap_or(original.clone());
+                    // Store in cache
+                    if let Some(cache) = &extras.rewrite_cache {
+                        if let Err(e) = cache.put(&cache_key, &result).await {
+                            emit(&events, RunEvent::Log {
+                                run_id: run_id.clone(),
+                                msg: format!("#{id} rewrite: cache write error: {e:#}")
+                            });
+                        }
+                    }
+                    result
+                };
+
+                if maybe != original {
+                    rewritten = Some(maybe.clone());
+                    prompt_used = maybe;
+                    emit(&events, RunEvent::Log { run_id: run_id.clone(), msg: format!("#{id} rewrite: changed") });
+                }
             }
 
             emit(&events, RunEvent::Log { run_id: run_id.clone(), msg: format!("#{id} provider: call") });
@@ -140,8 +180,20 @@ pub async fn run_orchestrator(
                 }
             }
 
+            // generate thumbnail if enabled
+            let thumbnail = match extras.post.maybe_thumbnail(&res.bytes) {
+                Ok(thumb) => thumb,
+                Err(e) => {
+                    emit(&events, RunEvent::Log {
+                        run_id: run_id.clone(),
+                        msg: format!("#{id} thumbnail error: {e:#}")
+                    });
+                    None
+                }
+            };
+
             // save
-            if let Err(e) = save_image_with_sidecar(&out_dir, &run_id, id, provider.name(), &res, &original, rewritten.as_deref(), price).await {
+            if let Err(e) = save_image_with_sidecar(&out_dir, &run_id, id, provider.name(), &res, &original, rewritten.as_deref(), price, thumbnail.as_deref()).await {
                 emit(&events, RunEvent::Log {
                     run_id: run_id.clone(),
                     msg: format!("#{id} save error: {e:#}")

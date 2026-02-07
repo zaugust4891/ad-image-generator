@@ -8,7 +8,6 @@ use tokio::{fs, io::{AsyncBufReadExt, AsyncWriteExt}, sync::Mutex};
 #[async_trait]
 pub trait PromptRewriter: Send + Sync {
     async fn rewrite(&self, original: &str) -> Result<String>;
-    #[allow(dead_code)]
     fn name(&self) -> &'static str;
 }
 
@@ -50,9 +49,7 @@ impl PromptRewriter for OpenAIRewriter {
     fn name(&self) -> &'static str { "openai-rewriter" }
 }
 
-#[allow(dead_code)]
 pub struct RewriteCache{ path: PathBuf, map: Arc<Mutex<std::collections::HashMap<String,String>>> }
-#[allow(dead_code)]
 impl RewriteCache{
     pub async fn load(path: PathBuf) -> Result<Self> {
         let mut map = std::collections::HashMap::new();
@@ -77,7 +74,6 @@ impl RewriteCache{
     }
 }
 
-#[allow(dead_code)]
 pub fn cache_key(original:&str, rewriter_name:&str, model:&str, system:&str)->String{
     let mut h = Sha256::new();
     h.update(rewriter_name.as_bytes());

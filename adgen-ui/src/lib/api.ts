@@ -32,14 +32,57 @@ export async function saveTemplate(t: Template): Promise<void> {
   if (!r.ok) throw new Error("Failed to save template");
 }
 
+export type ApiError = {
+  error: string;
+  code?: string;
+  suggestion?: string;
+};
+
 export async function startRun(): Promise<{ run_id: string }> {
   const r = await fetch(`${BASE}/api/run`, { method: "POST" });
-  if (!r.ok) throw new Error("Failed to start run");
+  if (!r.ok) {
+    const err: ApiError = await r.json().catch(() => ({ error: "Failed to start run" }));
+    const message = err.suggestion
+      ? `${err.error}\n\nSuggestion: ${err.suggestion}`
+      : err.error || "Failed to start run";
+    throw new Error(message);
+  }
+  return r.json();
+}
+
+export async function getCurrentRun(): Promise<{ run_id: string | null }> {
+  const r = await fetch(`${BASE}/api/run/current`);
+  if (!r.ok) throw new Error("Failed to get current run");
   return r.json();
 }
 
 export async function listImages(): Promise<{ name: string; url: string; created_ms: number }[]> {
   const r = await fetch(`${BASE}/api/images`);
   if (!r.ok) throw new Error("Failed to list images");
+  return r.json();
+}
+
+export type ValidationError = {
+  field: string;
+  message: string;
+  suggestion?: string;
+};
+
+export type ValidationResult = {
+  valid: boolean;
+  errors: ValidationError[];
+  warnings: string[];
+};
+
+export async function validateConfig(
+  config: RunConfig,
+  template: Template
+): Promise<ValidationResult> {
+  const r = await fetch(`${BASE}/api/config/validate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ config, template }),
+  });
+  if (!r.ok) throw new Error("Validation request failed");
   return r.json();
 }

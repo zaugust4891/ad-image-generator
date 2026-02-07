@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
-import { listImages, startRun } from "./lib/api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { listImages, startRun, getCurrentRun, getConfig, getTemplate, validateConfig } from "./lib/api";
+import type { ValidationResult } from "./lib/api";
 import { TemplateEditor } from "./components/TemplateEditor";
 import { ConfigEditor } from "./components/ConfigEditor";
 import { RunMonitor } from "./components/RunMonitor";
@@ -13,6 +14,27 @@ export default function App() {
   const [nav, setNav] = useState<Nav>("dashboard");
   const [runId, setRunId] = useState<string | null>(null);
 
+  // Gallery images state - lifted to App for real-time refresh
+  const [images, setImages] = useState<{ name: string; url: string; created_ms: number }[]>([]);
+
+  // Debounced gallery refresh
+  const refreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshGallery = useCallback(() => {
+    // Clear any pending refresh
+    if (refreshTimeoutRef.current) {
+      clearTimeout(refreshTimeoutRef.current);
+    }
+    // Debounce by 500ms to avoid too many API calls
+    refreshTimeoutRef.current = setTimeout(() => {
+      listImages().then(setImages).catch(() => setImages([]));
+    }, 500);
+  }, []);
+
+  // Initial gallery load
+  useEffect(() => {
+    listImages().then(setImages).catch(() => setImages([]));
+  }, []);
+
   const title = useMemo(() => {
     if (nav === "dashboard") return "Dashboard";
     if (nav === "config") return "Run Config";
@@ -21,8 +43,43 @@ export default function App() {
     return "Gallery";
   }, [nav]);
 
+  // Check for active run on mount
+  useEffect(() => {
+    getCurrentRun().then(({ run_id }) => {
+      if (run_id) {
+        setRunId(run_id);
+        setNav("run");
+      }
+    }).catch(() => {
+      // Ignore errors - backend might not be running
+    });
+  }, []);
+
   const [runLoading, setRunLoading] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
+
+  // Validation state
+  const [validating, setValidating] = useState(false);
+  const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
+
+  async function handleValidate() {
+    setValidating(true);
+    setValidationResult(null);
+    try {
+      const config = await getConfig();
+      const template = await getTemplate();
+      const result = await validateConfig(config, template);
+      setValidationResult(result);
+    } catch (err: any) {
+      setValidationResult({
+        valid: false,
+        errors: [{ field: "request", message: err?.message ?? "Validation failed" }],
+        warnings: [],
+      });
+    } finally {
+      setValidating(false);
+    }
+  }
 
   async function handleStartRun() {
     setRunLoading(true);
@@ -51,11 +108,19 @@ export default function App() {
           <Topbar title={title} onRun={handleStartRun} runLoading={runLoading} runError={runError} />
 
           <div className="p-6">
-            {nav === "dashboard" && <Dashboard onOpenGallery={() => setNav("gallery")} />}
+            {nav === "dashboard" && (
+              <Dashboard
+                onOpenGallery={() => setNav("gallery")}
+                onValidate={handleValidate}
+                validating={validating}
+                validationResult={validationResult}
+                onClearValidation={() => setValidationResult(null)}
+              />
+            )}
             {nav === "config" && <ConfigEditor />}
             {nav === "template" && <TemplateEditor />}
-            {nav === "run" && <RunMonitor runId={runId} onStartRun={handleStartRun} />}
-            {nav === "gallery" && <Gallery />}
+            {nav === "run" && <RunMonitor runId={runId} onStartRun={handleStartRun} onImageAdded={refreshGallery} />}
+            {nav === "gallery" && <Gallery images={images} />}
           </div>
         </main>
       </div>
@@ -117,7 +182,19 @@ function Topbar({ title, onRun, runLoading, runError }: { title: string; onRun: 
   );
 }
 
-function Dashboard({ onOpenGallery }: { onOpenGallery: () => void }) {
+function Dashboard({
+  onOpenGallery,
+  onValidate,
+  validating,
+  validationResult,
+  onClearValidation,
+}: {
+  onOpenGallery: () => void;
+  onValidate: () => void;
+  validating: boolean;
+  validationResult: ValidationResult | null;
+  onClearValidation: () => void;
+}) {
   return (
     <div className="grid gap-4">
       <div className="grid grid-cols-3 gap-4">
@@ -132,11 +209,69 @@ function Dashboard({ onOpenGallery }: { onOpenGallery: () => void }) {
           <button onClick={onOpenGallery} className="rounded-xl border border-zinc-700 px-4 py-2 text-sm hover:bg-zinc-900">
             Open gallery
           </button>
-          <button className="rounded-xl border border-zinc-700 px-4 py-2 text-sm hover:bg-zinc-900">
-            Validate config
+          <button
+            onClick={onValidate}
+            disabled={validating}
+            className={[
+              "rounded-xl border border-zinc-700 px-4 py-2 text-sm",
+              validating ? "opacity-50 cursor-not-allowed" : "hover:bg-zinc-900"
+            ].join(" ")}
+          >
+            {validating ? "Validating..." : "Validate config"}
           </button>
         </div>
       </div>
+
+      {validationResult && (
+        <div className={[
+          "rounded-2xl border p-5",
+          validationResult.valid
+            ? "border-emerald-900/40 bg-emerald-950/20"
+            : "border-red-900/40 bg-red-950/20"
+        ].join(" ")}>
+          <div className="flex items-center justify-between mb-3">
+            <div className={[
+              "text-sm font-semibold",
+              validationResult.valid ? "text-emerald-200" : "text-red-200"
+            ].join(" ")}>
+              {validationResult.valid ? "✓ Configuration Valid" : "✗ Configuration Invalid"}
+            </div>
+            <button
+              onClick={onClearValidation}
+              className="text-xs text-zinc-400 hover:text-zinc-200"
+            >
+              Dismiss
+            </button>
+          </div>
+
+          {validationResult.errors.length > 0 && (
+            <div className="space-y-2 mb-3">
+              {validationResult.errors.map((err, idx) => (
+                <div key={idx} className="rounded-xl border border-red-900/30 bg-red-950/30 p-3">
+                  <div className="text-sm text-red-200">
+                    <span className="font-mono text-xs text-red-300">{err.field}</span>: {err.message}
+                  </div>
+                  {err.suggestion && (
+                    <div className="mt-1 text-xs text-red-300/70">
+                      Suggestion: {err.suggestion}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {validationResult.warnings.length > 0 && (
+            <div className="space-y-2">
+              {validationResult.warnings.map((warn, idx) => (
+                <div key={idx} className="rounded-xl border border-yellow-900/30 bg-yellow-950/20 p-3 text-sm text-yellow-200">
+                  ⚠ {warn}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -151,13 +286,7 @@ function Card({ title, value, sub }: { title: string; value: string; sub: string
   );
 }
 
-function Gallery() {
-  const [images, setImages] = useState<{ name: string; url: string; created_ms: number }[]>([]);
-
-  useEffect(() => {
-    listImages().then(setImages).catch(() => setImages([]));
-  }, []);
-
+function Gallery({ images }: { images: { name: string; url: string; created_ms: number }[] }) {
   return (
     <div className="grid gap-4">
       {images.length === 0 ? (

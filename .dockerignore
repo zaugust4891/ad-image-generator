@@ -1,0 +1,25 @@
+# Build artifacts
+target/
+adgen-ui/node_modules/
+adgen-ui/dist/
+
+# Output directory
+output/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Environment files (don't bake secrets into image)
+.env
+.env.*
+
+# Logs
+*.log
+

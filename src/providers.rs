@@ -54,7 +54,7 @@ impl ImageProvider for OpenAIProvider {
         #[derive(serde::Serialize)] struct Req<'a>{prompt:&'a str, size:String, model:String, #[serde(skip_serializing_if="Option::is_none")] response_format:Option<&'a str>}
         #[derive(serde::Deserialize)] struct Resp{data:Vec<Item>}
         #[derive(serde::Deserialize)] struct Item{b64_json:String}
-        let needs_response_format = self.model.starts_with("dall-e");
+        let needs_response_format = self.model.starts_with("gpt-image-1.5");
         let req = Req{prompt, size: format!("{}x{}", self.w, self.h), model:self.model.clone(), response_format: if needs_response_format { Some("b64_json") } else { None }};
         let resp = self.client.post("https://api.openai.com/v1/images/generations")
             .bearer_auth(&self.api_key)
