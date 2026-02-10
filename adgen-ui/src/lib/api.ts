@@ -142,6 +142,49 @@ export type ValidationResult = {
   warnings: string[];
 };
 
+// --- Auth ---
+
+export type UserResponse = {
+  id: number;
+  email: string;
+  name?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function register(
+  email: string,
+  password: string,
+  name?: string,
+): Promise<UserResponse> {
+  const r = await fetch(`${BASE}/api/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email, password, name: name || undefined }),
+  });
+  if (!r.ok) {
+    const err: ApiError = await r.json().catch(() => ({ error: "Registration failed" }));
+    throw new Error(err.error || "Registration failed");
+  }
+  return r.json();
+}
+
+export async function login(
+  email: string,
+  password: string,
+): Promise<UserResponse> {
+  const r = await fetch(`${BASE}/api/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!r.ok) {
+    const err: ApiError = await r.json().catch(() => ({ error: "Login failed" }));
+    throw new Error(err.error || "Login failed");
+  }
+  return r.json();
+}
+
 export async function validateConfig(
   config: RunConfig,
   template: Template

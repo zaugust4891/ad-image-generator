@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listImages, startRun, getCurrentRun, getConfig, getTemplate, validateConfig } from "./lib/api";
-import type { ValidationResult } from "./lib/api";
+import type { UserResponse, ValidationResult } from "./lib/api";
 import { TemplateEditor } from "./components/TemplateEditor";
 import { ConfigEditor } from "./components/ConfigEditor";
 import { RunMonitor } from "./components/RunMonitor";
 import { LandingPage } from "./components/LandingPage";
+import { AuthPage } from "./components/AuthPage";
 
 
 type Nav = "dashboard" | "config" | "template" | "run" | "gallery";
 
 export default function App() {
-  const [authed, setAuthed] = useState(false);
+  const [user, setUser] = useState<UserResponse | null>(null);
+  const [authMode, setAuthMode] = useState<"login" | "signup" | null>(null);
   const [nav, setNav] = useState<Nav>("dashboard");
   const [runId, setRunId] = useState<string | null>(null);
 
@@ -95,14 +97,29 @@ export default function App() {
     }
   }
 
-  if (!authed) {
-    return <LandingPage onEnter={() => setAuthed(true)} />;
+  if (!user && authMode) {
+    return (
+      <AuthPage
+        initialMode={authMode}
+        onAuth={(u) => { setUser(u); setAuthMode(null); }}
+        onBack={() => setAuthMode(null)}
+      />
+    );
+  }
+
+  if (!user) {
+    return (
+      <LandingPage
+        onLogin={() => setAuthMode("login")}
+        onSignup={() => setAuthMode("signup")}
+      />
+    );
   }
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
       <div className="mx-auto grid max-w-7xl grid-cols-[260px_1fr] gap-6 p-6">
-        <Sidebar nav={nav} setNav={setNav} />
+        <Sidebar nav={nav} setNav={setNav} user={user} onLogout={() => setUser(null)} />
 
         <main className="rounded-2xl border border-zinc-800 bg-zinc-950/40 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
           <Topbar title={title} onRun={handleStartRun} runLoading={runLoading} runError={runError} />
@@ -128,7 +145,7 @@ export default function App() {
   );
 }
 
-function Sidebar({ nav, setNav }: { nav: Nav; setNav: (n: Nav) => void }) {
+function Sidebar({ nav, setNav, user, onLogout }: { nav: Nav; setNav: (n: Nav) => void; user: UserResponse; onLogout: () => void }) {
   const item = (id: Nav, label: string) => (
     <button
       onClick={() => setNav(id)}
@@ -142,7 +159,7 @@ function Sidebar({ nav, setNav }: { nav: Nav; setNav: (n: Nav) => void }) {
   );
 
   return (
-    <aside className="rounded-2xl border border-zinc-800 bg-zinc-950/40 p-4 backdrop-blur">
+    <aside className="flex flex-col rounded-2xl border border-zinc-800 bg-zinc-950/40 p-4 backdrop-blur">
       <div className="mb-4">
         <div className="text-lg font-semibold tracking-tight">adgen</div>
         <div className="text-xs text-zinc-400">Local image generation studio</div>
@@ -156,6 +173,24 @@ function Sidebar({ nav, setNav }: { nav: Nav; setNav: (n: Nav) => void }) {
       </div>
       <div className="mt-6 rounded-xl border border-zinc-800 bg-zinc-900/30 p-3 text-xs text-zinc-400">
         Tip: keep concurrency + rate balanced to avoid provider throttling.
+      </div>
+      <div className="mt-auto pt-4 border-t border-zinc-800">
+        <div className="flex items-center justify-between">
+          <div className="min-w-0">
+            <div className="truncate text-sm font-medium text-zinc-200">
+              {user.name || user.email}
+            </div>
+            {user.name && (
+              <div className="truncate text-xs text-zinc-500">{user.email}</div>
+            )}
+          </div>
+          <button
+            onClick={onLogout}
+            className="ml-2 shrink-0 rounded-lg px-2 py-1 text-xs text-zinc-500 transition hover:bg-zinc-800 hover:text-zinc-300"
+          >
+            Log out
+          </button>
+        </div>
       </div>
     </aside>
   );

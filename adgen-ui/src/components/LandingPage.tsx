@@ -1,4 +1,4 @@
-export function LandingPage({ onEnter }: { onEnter: () => void }) {
+export function LandingPage({ onLogin, onSignup }: { onLogin: () => void; onSignup: () => void }) {
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
       {/* Nav */}
@@ -6,13 +6,13 @@ export function LandingPage({ onEnter }: { onEnter: () => void }) {
         <div className="text-lg font-semibold tracking-tight">adgen</div>
         <div className="flex items-center gap-3">
           <button
-            onClick={onEnter}
+            onClick={onLogin}
             className="rounded-lg px-4 py-2 text-sm text-zinc-300 transition hover:text-white"
           >
             Login
           </button>
           <button
-            onClick={onEnter}
+            onClick={onSignup}
             className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-zinc-950 transition hover:bg-zinc-200"
           >
             Sign Up
@@ -38,14 +38,14 @@ export function LandingPage({ onEnter }: { onEnter: () => void }) {
           </p>
           <div className="mt-10 flex items-center justify-center gap-4">
             <button
-              onClick={onEnter}
+              onClick={onSignup}
               className="inline-flex items-center gap-2 rounded-lg bg-white px-6 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-zinc-200"
             >
               Get Started
               <span aria-hidden="true">&rarr;</span>
             </button>
             <button
-              onClick={onEnter}
+              onClick={onLogin}
               className="inline-flex items-center gap-2 rounded-lg border border-zinc-700 px-6 py-3 text-sm font-semibold text-zinc-100 transition hover:bg-zinc-900"
             >
               Login
@@ -237,14 +237,14 @@ export function LandingPage({ onEnter }: { onEnter: () => void }) {
           </p>
           <div className="mt-8 flex items-center justify-center gap-4">
             <button
-              onClick={onEnter}
+              onClick={onSignup}
               className="inline-flex items-center gap-2 rounded-lg bg-white px-6 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-zinc-200"
             >
               Sign Up
               <span aria-hidden="true">&rarr;</span>
             </button>
             <button
-              onClick={onEnter}
+              onClick={onLogin}
               className="inline-flex items-center gap-2 rounded-lg border border-zinc-700 px-6 py-3 text-sm font-semibold text-zinc-100 transition hover:bg-zinc-900"
             >
               Login
