@@ -1,6 +1,7 @@
 
 pub mod auth;
-pub mod backoff;  
+pub mod backoff;
+pub mod cost_tracking;  
 pub use backoff::backoff_ms;
 pub mod config;
 pub use config::{ProviderCfg, OrchestratorCfg, DedupeCfg, PostCfg, RewriteCfg, RunCfg, TemplateYaml};

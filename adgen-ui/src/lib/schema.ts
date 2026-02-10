@@ -36,6 +36,7 @@ export const RunConfigSchema = z.object({
   }),
   out_dir: z.string().min(1, "Output directory is required"),
   seed: z.number().int().nonnegative(),
+  budget_limit_usd: z.number().nonnegative().optional(),
 }).refine(
   (data) => data.provider.kind !== "openai" || (data.provider.api_key_env && data.provider.api_key_env.length > 0),
   {

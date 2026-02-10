@@ -40,6 +40,8 @@ pub struct RunCfg{
     pub rewrite: RewriteCfg,
     pub out_dir: PathBuf,
     pub seed: u64,
+    #[serde(default)]
+    pub budget_limit_usd: Option<f64>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Mode {

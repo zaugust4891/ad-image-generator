@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing_subscriber::EnvFilter;
 
-mod auth; mod backoff; mod config; mod dedupe; mod events; mod io; mod manifest; mod orchestrator; mod post; mod postgres; mod providers; mod prompts; mod rate_limit; mod rewrite; mod api;
+mod auth; mod backoff; mod config; mod cost_tracking; mod dedupe; mod events; mod io; mod manifest; mod orchestrator; mod post; mod postgres; mod providers; mod prompts; mod rate_limit; mod rewrite; mod api;
 use config::{Mode, RunCfg, TemplateYaml};
 
 use providers::{ImageProvider, MockProvider, OpenAIProvider};

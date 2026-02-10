@@ -205,6 +205,7 @@ pub async fn run_orchestrator(
                 run_id: run_id.clone(),
                 done: n,
                 total,
+                cost_so_far: n as f64 * price,
             });
             emit(&events, RunEvent::Log { run_id: run_id.clone(), msg: format!("#{id} saved (done {n}/{total})") });
 

@@ -8,6 +8,7 @@ export type RunConfig = {
   rewrite: { enabled: boolean; model: string; system: string; max_tokens: number };
   out_dir: string;
   seed: number;
+  budget_limit_usd?: number;
 };
 
 export type Template = { brand: string; product: string; styles: string[] };
@@ -182,6 +183,52 @@ export async function login(
     const err: ApiError = await r.json().catch(() => ({ error: "Login failed" }));
     throw new Error(err.error || "Login failed");
   }
+  return r.json();
+}
+
+// --- Cost Tracking ---
+
+export type RunCostEntry = {
+  run_id: string;
+  cost: number;
+  image_count: number;
+};
+
+export type ProviderCostEntry = {
+  provider: string;
+  model: string;
+  cost: number;
+  image_count: number;
+};
+
+export type CostSummary = {
+  total_cost: number;
+  image_count: number;
+  avg_cost_per_image: number;
+  runs: RunCostEntry[];
+  by_provider: ProviderCostEntry[];
+};
+
+export type CostEstimate = {
+  estimated_cost: number;
+};
+
+export async function getCostSummary(): Promise<CostSummary> {
+  const r = await fetch(`${BASE}/api/cost/summary`);
+  if (!r.ok) throw new Error("Failed to load cost summary");
+  return r.json();
+}
+
+export async function getCostEstimate(
+  target_images: number,
+  price_per_image: number,
+): Promise<CostEstimate> {
+  const r = await fetch(`${BASE}/api/cost/estimate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ target_images, price_per_image }),
+  });
+  if (!r.ok) throw new Error("Failed to get cost estimate");
   return r.json();
 }
 

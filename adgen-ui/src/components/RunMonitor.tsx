@@ -7,7 +7,7 @@ type ConnectionState = "connecting" | "connected" | "disconnected" | "reconnecti
 type RunEvent =
   | { type: "started"; run_id: string; total: number }
   | { type: "log"; run_id: string; msg: string }
-  | { type: "progress"; run_id: string; done: number; total: number }
+  | { type: "progress"; run_id: string; done: number; total: number; cost_so_far: number }
   | { type: "finished"; run_id: string }
   | { type: "failed"; run_id: string; error: string };
 
@@ -33,6 +33,7 @@ export function RunMonitor({
   const [done, setDone] = useState(0);
   const [total, setTotal] = useState(0);
   const [logs, setLogs] = useState<string[]>([]);
+  const [costSoFar, setCostSoFar] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const logRef = useRef<HTMLDivElement | null>(null);
@@ -93,6 +94,7 @@ export function RunMonitor({
             case "progress":
               setDone(evt.done);
               setTotal(evt.total);
+              setCostSoFar(evt.cost_so_far);
               onImageAdded?.();
               break;
 
@@ -181,7 +183,14 @@ export function RunMonitor({
       </div>
 
       <div className="rounded-2xl border border-zinc-800 bg-zinc-900/20 p-4">
-        <div className="mb-2 text-xs text-zinc-400">Progress</div>
+        <div className="mb-2 flex items-center justify-between">
+          <div className="text-xs text-zinc-400">Progress</div>
+          {costSoFar > 0 && (
+            <div className="text-xs text-zinc-400">
+              Cost: <span className="text-zinc-200">${costSoFar.toFixed(4)}</span>
+            </div>
+          )}
+        </div>
         <div className="h-3 w-full overflow-hidden rounded-full bg-zinc-800">
           <div className="h-full bg-zinc-200" style={{ width: `${pct}%` }} />
         </div>

@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { listImages, startRun, getCurrentRun, getConfig, getTemplate, validateConfig } from "./lib/api";
+import { listImages, startRun, getCurrentRun, getConfig, getTemplate, validateConfig, getCostEstimate, getCostSummary } from "./lib/api";
 import type { UserResponse, ValidationResult } from "./lib/api";
 import { TemplateEditor } from "./components/TemplateEditor";
 import { ConfigEditor } from "./components/ConfigEditor";
 import { RunMonitor } from "./components/RunMonitor";
 import { LandingPage } from "./components/LandingPage";
 import { AuthPage } from "./components/AuthPage";
+import { CostDashboard } from "./components/CostDashboard";
 
 
-type Nav = "dashboard" | "config" | "template" | "run" | "gallery";
+type Nav = "dashboard" | "config" | "template" | "run" | "gallery" | "costs";
 
 export default function App() {
   const [user, setUser] = useState<UserResponse | null>(null);
@@ -42,6 +43,7 @@ export default function App() {
     if (nav === "config") return "Run Config";
     if (nav === "template") return "Template";
     if (nav === "run") return "Run Monitor";
+    if (nav === "costs") return "Cost Tracking";
     return "Gallery";
   }, [nav]);
 
@@ -137,6 +139,7 @@ export default function App() {
             {nav === "config" && <ConfigEditor />}
             {nav === "template" && <TemplateEditor />}
             {nav === "run" && <RunMonitor runId={runId} onStartRun={handleStartRun} onImageAdded={refreshGallery} />}
+            {nav === "costs" && <CostDashboard />}
             {nav === "gallery" && <Gallery images={images} />}
           </div>
         </main>
@@ -170,6 +173,7 @@ function Sidebar({ nav, setNav, user, onLogout }: { nav: Nav; setNav: (n: Nav) =
         {item("template", "Template")}
         {item("run", "Run Monitor")}
         {item("gallery", "Gallery")}
+        {item("costs", "Cost Tracking")}
       </div>
       <div className="mt-6 rounded-xl border border-zinc-800 bg-zinc-900/30 p-3 text-xs text-zinc-400">
         Tip: keep concurrency + rate balanced to avoid provider throttling.
@@ -230,12 +234,40 @@ function Dashboard({
   validationResult: ValidationResult | null;
   onClearValidation: () => void;
 }) {
+  const [estimate, setEstimate] = useState<number | null>(null);
+  const [totalSpend, setTotalSpend] = useState<number | null>(null);
+  const [budget, setBudget] = useState<number | null>(null);
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const [cfg, summary] = await Promise.all([getConfig(), getCostSummary()]);
+        setTotalSpend(summary.total_cost);
+        setBudget(cfg.budget_limit_usd ?? null);
+        const price = cfg.provider.price_usd_per_image ?? 0;
+        if (price > 0) {
+          const est = await getCostEstimate(cfg.orchestrator.target_images, price);
+          setEstimate(est.estimated_cost);
+        }
+      } catch { /* ignore on dashboard */ }
+    }
+    load();
+  }, []);
+
+  const overBudget = budget && budget > 0 && estimate !== null && totalSpend !== null
+    && (totalSpend + estimate) > budget;
+
   return (
     <div className="grid gap-4">
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-4 gap-4">
         <Card title="Runs" value="Ready" sub="Start a run to see live progress." />
         <Card title="Output" value="out/" sub="Gallery updates as images land." />
         <Card title="Health" value="Local API" sub="localhost:8787 expected." />
+        <Card
+          title="Next Run Est."
+          value={estimate !== null ? `$${estimate.toFixed(4)}` : "—"}
+          sub={overBudget ? "⚠ Exceeds budget" : "Based on config"}
+        />
       </div>
 
       <div className="rounded-2xl border border-zinc-800 bg-zinc-900/20 p-5">

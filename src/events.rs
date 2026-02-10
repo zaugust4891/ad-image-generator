@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 pub enum RunEvent {
     Started { run_id: String, total: u64 },
     Log { run_id: String, msg: String },
-    Progress { run_id: String, done: u64, total: u64 },
+    Progress { run_id: String, done: u64, total: u64, cost_so_far: f64 },
     Finished { run_id: String },
     Failed { run_id: String, error: String },
 }

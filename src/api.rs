@@ -14,7 +14,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
-use crate::{auth::{self, UserResponse}, config::{Mode, RunCfg, TemplateYaml}, events::RunEvent, run_once};
+use crate::{auth::{self, UserResponse}, config::{Mode, RunCfg, TemplateYaml}, cost_tracking, events::RunEvent, run_once};
 use anyhow::Context;
 
 #[derive(Clone)]
@@ -63,6 +63,8 @@ pub async fn serve(bind: String, config_path: PathBuf, template_path: PathBuf, p
         .route("/images/{name}", get(get_image))
         .route("/api/register", post(register))
         .route("/api/login", post(login))
+        .route("/api/cost/summary", get(cost_summary))
+        .route("/api/cost/estimate", post(cost_estimate))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -376,6 +378,32 @@ async fn login(
     }
 
     Ok(Json(UserResponse::from(user)))
+}
+
+async fn cost_summary(State(st): State<AppState>) -> Result<Json<cost_tracking::CostSummary>, ApiErr> {
+    let txt = tokio::fs::read_to_string(&st.config_path).await.map_err(ApiErr::from)?;
+    let cfg: RunCfg = serde_yaml::from_str(&txt).map_err(ApiErr::from)?;
+    let summary = cost_tracking::compute_cost_summary(&cfg.out_dir)
+        .await
+        .map_err(ApiErr::from)?;
+    Ok(Json(summary))
+}
+
+#[derive(Deserialize)]
+struct CostEstimateReq {
+    target_images: u64,
+    price_per_image: f64,
+}
+
+#[derive(Serialize)]
+struct CostEstimateResp {
+    estimated_cost: f64,
+}
+
+async fn cost_estimate(Json(req): Json<CostEstimateReq>) -> Json<CostEstimateResp> {
+    Json(CostEstimateResp {
+        estimated_cost: cost_tracking::estimate_cost(req.target_images, req.price_per_image),
+    })
 }
 
 #[derive(Serialize)]
