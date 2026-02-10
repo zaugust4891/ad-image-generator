@@ -1,4 +1,5 @@
 
+pub mod auth;
 pub mod backoff;  
 pub use backoff::backoff_ms;
 pub mod config;
@@ -13,6 +14,7 @@ pub mod orchestrator;
 pub use orchestrator::{run_orchestrator, OrchestratorExtras};
 pub mod post;
 pub use post::PostProcessor;
+pub mod postgres;
 pub mod providers;
 pub use providers::ImageProvider;
 pub mod prompts;

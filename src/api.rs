@@ -14,7 +14,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
-use crate::{config::{Mode, RunCfg, TemplateYaml}, events::RunEvent, run_once};
+use crate::{auth::{self, UserResponse}, config::{Mode, RunCfg, TemplateYaml}, events::RunEvent, run_once};
 use anyhow::Context;
 
 #[derive(Clone)]
@@ -23,10 +23,11 @@ pub struct AppState {
     template_path: PathBuf,
     current_run: Arc<Mutex<Option<String>>>,
     events_tx: broadcast::Sender<RunEvent>,
+    pool: sqlx::PgPool,
 }
 
 
-pub async fn serve(bind: String, config_path: PathBuf, template_path: PathBuf) -> Result<()> {
+pub async fn serve(bind: String, config_path: PathBuf, template_path: PathBuf, pool: sqlx::PgPool) -> Result<()> {
     // Validate config and output directory at startup
     let cfg_txt = tokio::fs::read_to_string(&config_path)
         .await
@@ -48,6 +49,7 @@ pub async fn serve(bind: String, config_path: PathBuf, template_path: PathBuf) -
         template_path,
         current_run: Arc::new(Mutex::new(None)),
         events_tx: tx,
+        pool,
     };
 
     let app = Router::new()
@@ -59,6 +61,8 @@ pub async fn serve(bind: String, config_path: PathBuf, template_path: PathBuf) -
         .route("/api/run/{id}/events", get(run_events))
         .route("/api/images", get(list_images))
         .route("/images/{name}", get(get_image))
+        .route("/api/register", post(register))
+        .route("/api/login", post(login))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -90,6 +94,19 @@ async fn put_template(State(st): State<AppState>, Json(tpl): Json<TemplateYaml>)
     let out = serde_yaml::to_string(&tpl).map_err(ApiErr::from)?;
     tokio::fs::write(&st.template_path, out).await.map_err(ApiErr::from)?;
     Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct RegisterReq {
+    email: String,
+    password: String,
+    name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct LoginReq {
+    email: String,
+    password: String,
 }
 
 #[derive(Deserialize)]
@@ -290,6 +307,77 @@ pub async fn run_events(
 
     Sse::new(stream)
 }
+async fn register(
+    State(st): State<AppState>,
+    Json(req): Json<RegisterReq>,
+) -> Result<(StatusCode, Json<UserResponse>), ApiErr> {
+    let email = req.email.trim().to_lowercase();
+    if email.is_empty() {
+        return Err(ApiErr::bad_request("Email is required"));
+    }
+    if req.password.len() < 8 {
+        return Err(ApiErr::bad_request("Password must be at least 8 characters"));
+    }
+
+    let password = req.password;
+    let hashed = tokio::task::spawn_blocking(move || auth::hash_password(&password))
+        .await
+        .map_err(|e| ApiErr::internal(e))?
+        .map_err(|e| ApiErr::internal(e))?;
+
+    let row = sqlx::query_as::<_, auth::UserRow>(
+        "INSERT INTO users (email, password, name) VALUES ($1, $2, $3) RETURNING *"
+    )
+    .bind(&email)
+    .bind(&hashed)
+    .bind(&req.name)
+    .fetch_one(&st.pool)
+    .await
+    .map_err(|e| {
+        if let sqlx::Error::Database(ref db_err) = e {
+            if db_err.code().as_deref() == Some("23505") {
+                return ApiErr::conflict("A user with this email already exists");
+            }
+        }
+        ApiErr::internal(e)
+    })?;
+
+    Ok((StatusCode::CREATED, Json(UserResponse::from(row))))
+}
+
+async fn login(
+    State(st): State<AppState>,
+    Json(req): Json<LoginReq>,
+) -> Result<Json<UserResponse>, ApiErr> {
+    let email = req.email.trim().to_lowercase();
+
+    let row = sqlx::query_as::<_, auth::UserRow>(
+        "SELECT * FROM users WHERE email = $1"
+    )
+    .bind(&email)
+    .fetch_optional(&st.pool)
+    .await
+    .map_err(ApiErr::internal)?;
+
+    let user = match row {
+        Some(u) => u,
+        None => return Err(ApiErr::unauthorized()),
+    };
+
+    let stored_hash = user.password.clone();
+    let password = req.password;
+    let valid = tokio::task::spawn_blocking(move || auth::verify_password(&password, &stored_hash))
+        .await
+        .map_err(|e| ApiErr::internal(e))?
+        .map_err(|e| ApiErr::internal(e))?;
+
+    if !valid {
+        return Err(ApiErr::unauthorized());
+    }
+
+    Ok(Json(UserResponse::from(user)))
+}
+
 #[derive(Serialize)]
 struct ImageItem { name: String, url: String, created_ms: u128 }
 
@@ -393,6 +481,33 @@ impl ApiErr {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             code: "internal_error".to_string(),
             message: format!("Internal error: {}", e),
+            suggestion: None,
+        }
+    }
+
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            code: "bad_request".to_string(),
+            message: message.into(),
+            suggestion: None,
+        }
+    }
+
+    fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            code: "conflict".to_string(),
+            message: message.into(),
+            suggestion: None,
+        }
+    }
+
+    fn unauthorized() -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            code: "unauthorized".to_string(),
+            message: "Invalid email or password".to_string(),
             suggestion: None,
         }
     }

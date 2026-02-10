@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing_subscriber::EnvFilter;
 
-mod backoff; mod config; mod dedupe; mod events; mod io; mod manifest; mod orchestrator; mod post; mod providers; mod prompts; mod rate_limit; mod rewrite; mod api;
+mod auth; mod backoff; mod config; mod dedupe; mod events; mod io; mod manifest; mod orchestrator; mod post; mod postgres; mod providers; mod prompts; mod rate_limit; mod rewrite; mod api;
 use config::{Mode, RunCfg, TemplateYaml};
 
 use providers::{ImageProvider, MockProvider, OpenAIProvider};
@@ -47,6 +47,9 @@ enum Command {
 
         #[arg(long, default_value = "./template.yml")]
         template_path: PathBuf,
+
+        #[arg(long, default_value = "./madgen.db")]
+        db_path: PathBuf,
     },
 }
 
@@ -80,15 +83,16 @@ pub async fn validate_output_dir(out_dir: &PathBuf) -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    dotenvy::dotenv().ok();
     tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env()).init();
     let cli = Cli::parse();
-
     match cli.cmd {
         Command::Run { config, template, out_dir, resume } => {
             run_once(config, template, out_dir, resume, None, None).await
         }
-        Command::Serve { bind, config_path, template_path } => {
-            api::serve(bind, config_path, template_path).await
+        Command::Serve { bind, config_path, template_path, db_path: _ } => {
+            let pool = postgres::connect().await?;
+            api::serve(bind, config_path, template_path, pool).await
         }
     }
 }
